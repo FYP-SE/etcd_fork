@@ -1,4 +1,12 @@
 // This is a generated file. Do not edit directly.
+//
+// MANUAL ADDITION (T0.2, HeirRaft): scripts/update_go_workspace.sh deletes
+// this file outright (`rm -f go.work`) and rebuilds it from `go work init` +
+// `go work edit -use <dir>` per local go.mod -- it never adds `replace`
+// directives, so the line below WILL be wiped by a full regeneration.
+// Re-add after regenerating with:
+//   go work edit -replace go.etcd.io/raft/v3=../raft_fork
+replace go.etcd.io/raft/v3 => ../raft_fork
 
 go 1.26
 
