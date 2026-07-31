@@ -92,6 +92,22 @@ type WAL struct {
 
 	locks []*fileutil.LockedFile // the locked files the WAL holds (the name is increasing)
 	fp    *filePipeline
+
+	// fsyncObserver, if set, is called after every successful fsync/fdatasync
+	// with its duration (HeirRaft's stability scorer -- see
+	// server/etcdserver/stability.Runner.ObserveFsync and SetFsyncObserver).
+	// nil (the default) means no HeirRaft flags are enabled, or the feature
+	// simply isn't used -- either way, zero overhead beyond a nil check.
+	fsyncObserver func(time.Duration)
+}
+
+// SetFsyncObserver installs a callback invoked after each WAL
+// fsync/fdatasync with its duration. Safe to call concurrently with WAL
+// operations; pass nil to disable (the default).
+func (w *WAL) SetFsyncObserver(f func(time.Duration)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.fsyncObserver = f
 }
 
 // Create creates a WAL ready for appending records. The given metadata is
@@ -226,7 +242,11 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		)
 		return nil, perr
 	}
-	walFsyncSec.Observe(time.Since(start).Seconds())
+	syncTook := time.Since(start)
+	walFsyncSec.Observe(syncTook.Seconds())
+	if w.fsyncObserver != nil {
+		w.fsyncObserver(syncTook)
+	}
 	if err = dirCloser(); err != nil {
 		return nil, err
 	}
@@ -805,7 +825,11 @@ func (w *WAL) cut() error {
 	if err = fileutil.Fsync(w.dirFile); err != nil {
 		return err
 	}
-	walFsyncSec.Observe(time.Since(start).Seconds())
+	cutTook := time.Since(start)
+	walFsyncSec.Observe(cutTook.Seconds())
+	if w.fsyncObserver != nil {
+		w.fsyncObserver(cutTook)
+	}
 
 	// reopen newTail with its new path so calls to Name() match the wal filename format
 	newTail.Close()
@@ -852,6 +876,9 @@ func (w *WAL) sync() error {
 		)
 	}
 	walFsyncSec.Observe(took.Seconds())
+	if w.fsyncObserver != nil {
+		w.fsyncObserver(took)
+	}
 
 	return err
 }

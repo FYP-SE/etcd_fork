@@ -40,6 +40,7 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
+	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	servererrors "go.etcd.io/etcd/server/v3/etcdserver/errors"
 	serverstorage "go.etcd.io/etcd/server/v3/storage"
 	"go.etcd.io/etcd/server/v3/storage/backend"
@@ -194,6 +195,12 @@ type bootstrappedRaft struct {
 	peers   []raft.Peer
 	config  *raft.Config
 	storage *raft.MemoryStorage
+
+	// heirRunner is non-nil only when a HeirRaft experimental flag is set
+	// (see raftConfig). newRaftNode doesn't start it -- the caller (bootstrap)
+	// is responsible for wiring its WAL fsync hook and starting its sampling
+	// goroutine once the WAL and server lifecycle are both available.
+	heirRunner *stability.Runner
 }
 
 func bootstrapStorage(cfg config.ServerConfig, be *bootstrappedBackend, wal *bootstrappedWAL, cl *bootstrappedCluster) *bootstrappedStorage {
@@ -518,27 +525,51 @@ func bootstrapRaftFromCluster(cfg config.ServerConfig, cl *membership.RaftCluste
 		zap.String("cluster-id", cl.ID().String()),
 	)
 	s := bwal.MemoryStorage()
+	rc, runner := raftConfig(cfg, uint64(member.ID), s)
+	wireHeirRunnerFsyncHook(bwal, runner)
 	return &bootstrappedRaft{
-		lg:        cfg.Logger,
-		heartbeat: time.Duration(cfg.TickMs) * time.Millisecond,
-		config:    raftConfig(cfg, uint64(member.ID), s),
-		peers:     peers,
-		storage:   s,
+		lg:         cfg.Logger,
+		heartbeat:  time.Duration(cfg.TickMs) * time.Millisecond,
+		config:     rc,
+		heirRunner: runner,
+		peers:      peers,
+		storage:    s,
 	}
 }
 
 func bootstrapRaftFromWAL(cfg config.ServerConfig, bwal *bootstrappedWAL) *bootstrappedRaft {
 	s := bwal.MemoryStorage()
+	rc, runner := raftConfig(cfg, uint64(bwal.meta.nodeID), s)
+	wireHeirRunnerFsyncHook(bwal, runner)
 	return &bootstrappedRaft{
-		lg:        cfg.Logger,
-		heartbeat: time.Duration(cfg.TickMs) * time.Millisecond,
-		config:    raftConfig(cfg, uint64(bwal.meta.nodeID), s),
-		storage:   s,
+		lg:         cfg.Logger,
+		heartbeat:  time.Duration(cfg.TickMs) * time.Millisecond,
+		config:     rc,
+		heirRunner: runner,
+		storage:    s,
 	}
 }
 
-func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) *raft.Config {
-	return &raft.Config{
+// wireHeirRunnerFsyncHook connects a HeirRaft stability.Runner's fsync
+// signal to this member's WAL, if HeirRaft is enabled. A no-op when runner
+// is nil (every experimental flag off, the default).
+func wireHeirRunnerFsyncHook(bwal *bootstrappedWAL, runner *stability.Runner) {
+	if runner == nil || bwal.w == nil {
+		return
+	}
+	bwal.w.SetFsyncObserver(runner.ObserveFsync)
+}
+
+// raftConfig builds the raft.Config for this member. When any HeirRaft
+// experimental flag is set (config.ServerConfig.ExperimentalHeirElection /
+// ExperimentalHeirLogPriority / ExperimentalGracefulHandover), it also
+// builds the etcd-side stability.Runner (T5.1) feeding it and returns it as
+// the second value so the caller can start its sampling goroutine and wire
+// the WAL fsync hook. With every flag false (the default), the second
+// return value is nil and the returned raft.Config is byte-identical to
+// stock (TASKS.md T5.2 accept criterion).
+func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raft.Config, *stability.Runner) {
+	rc := &raft.Config{
 		ID:              id,
 		ElectionTick:    cfg.ElectionTicks,
 		HeartbeatTick:   1,
@@ -549,6 +580,41 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) *raft
 		PreVote:         cfg.PreVote,
 		Logger:          NewRaftLoggerZap(cfg.Logger.Named("raft")),
 	}
+
+	if !cfg.ExperimentalHeirElection && !cfg.ExperimentalHeirLogPriority && !cfg.ExperimentalGracefulHandover {
+		return rc, nil
+	}
+
+	tunables, err := config.ParseHeirTunables(cfg.ExperimentalHeirConfig)
+	if err != nil {
+		cfg.Logger.Panic("invalid --experimental-heir-config", zap.Error(err))
+	}
+
+	runner, err := stability.NewRunner(stability.Config{
+		Logger: cfg.Logger.Named("heirraft-stability"),
+		CPU:    stability.NewCPUSampler(),
+		Mem:    stability.NewMemSampler(),
+		Bounds: stability.DefaultBounds(),
+	})
+	if err != nil {
+		cfg.Logger.Panic("failed to build HeirRaft stability scorer", zap.Error(err))
+	}
+
+	rc.StabilityScorer = runner
+	rc.HeirElection = cfg.ExperimentalHeirElection
+	rc.HeirLogPriority = cfg.ExperimentalHeirLogPriority
+	rc.GracefulHandover = cfg.ExperimentalGracefulHandover
+	rc.MaxHeirLag = tunables.MaxHeirLag
+	rc.HysteresisMargin = tunables.HysteresisMargin
+	rc.MinHeirTenure = tunables.MinHeirTenure
+	rc.HeirJitter = tunables.HeirJitter
+	rc.NonHeirBackoff = tunables.NonHeirBackoff
+	rc.HeirStaleness = tunables.HeirStaleness
+	rc.HandoverThreshold = tunables.HandoverThreshold
+	rc.DegradeWindow = tunables.DegradeWindow
+	rc.HandoverCooldown = tunables.HandoverCooldown
+
+	return rc, runner
 }
 
 func (b *bootstrappedRaft) newRaftNode(ss *snap.Snapshotter, wal *wal.WAL, cl *membership.RaftCluster) *raftNode {

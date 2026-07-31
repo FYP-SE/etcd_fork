@@ -60,6 +60,7 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3compactor"
 	"go.etcd.io/etcd/server/v3/etcdserver/apply"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
+	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	"go.etcd.io/etcd/server/v3/etcdserver/errors"
 	"go.etcd.io/etcd/server/v3/etcdserver/read"
 	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
@@ -216,6 +217,11 @@ type EtcdServer struct {
 	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
 	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned.
 
+	// heirRunner is non-nil only when a HeirRaft experimental flag was set
+	// at bootstrap (T5.2). Its sampling goroutine is started in Start(),
+	// tied to server shutdown via s.stopping.
+	heirRunner *stability.Runner
+
 	readych chan struct{}
 	Cfg     config.ServerConfig
 
@@ -318,6 +324,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		errorc:                make(chan error, 1),
 		snapshotter:           b.ss,
 		r:                     *b.raft.newRaftNode(b.ss, b.storage.wal.w, b.cluster.cl),
+		heirRunner:            b.raft.heirRunner,
 		memberID:              b.cluster.nodeID,
 		attributes:            membership.Attributes{Name: cfg.Name, ClientURLs: cfg.ClientURLs.StringSlice()},
 		cluster:               b.cluster.cl,
@@ -569,6 +576,10 @@ func (s *EtcdServer) start() {
 	s.stop = make(chan struct{})
 	s.stopping = make(chan struct{}, 1)
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	if s.heirRunner != nil {
+		s.GoAttach(func() { s.heirRunner.Run(s.ctx) })
+		s.GoAttach(s.monitorHeirRaftMetrics)
+	}
 	s.read = read.NewRead(s, &s.r)
 	s.leaderChanged = notify.NewNotifier()
 	if s.ClusterVersion() != nil {
@@ -1266,6 +1277,38 @@ func (s *EtcdServer) MoveLeader(ctx context.Context, lead, transferee uint64) er
 	return nil
 }
 
+// pickShutdownTransferee is the decision logic behind shutdownTransferee,
+// factored out so it can be unit tested without a full running EtcdServer
+// (raftStatus/cluster/transport all require real I/O-backed state). When
+// heirEnabled and heir is a connected voting member, it's preferred over
+// fallback -- see shutdownTransferee's doc for why.
+func pickShutdownTransferee(heirEnabled bool, heir types.ID, isVotingMember, isConnected func(types.ID) bool, fallback func() (types.ID, bool)) (types.ID, bool) {
+	if heirEnabled && heir != 0 && isVotingMember(heir) && isConnected(heir) {
+		return heir, true
+	}
+	return fallback()
+}
+
+// shutdownTransferee picks who leadership should transfer to on graceful
+// shutdown (T5.2's SIGTERM path accept criterion: "confirm etcd's existing
+// leadership-transfer-on-shutdown targets the heir when flag on"). When
+// HeirRaft is enabled (s.heirRunner != nil) and a connected, voting heir is
+// currently designated, it's preferred -- that's DESIGN.md's whole point,
+// the heir is continuously chosen to minimize handover disruption, so
+// shutdown should hand off to it rather than to whichever peer merely
+// happens to have been connected longest. Falls back to the pre-existing
+// longestConnected heuristic otherwise (HeirRaft off, or no eligible heir
+// currently designated).
+func (s *EtcdServer) shutdownTransferee() (types.ID, bool) {
+	return pickShutdownTransferee(
+		s.heirRunner != nil,
+		types.ID(s.raftStatus().Heir),
+		func(id types.ID) bool { m := s.cluster.Member(id); return m != nil && !m.IsLearner },
+		func(id types.ID) bool { return !s.r.transport.ActiveSince(id).IsZero() },
+		func() (types.ID, bool) { return longestConnected(s.r.transport, s.cluster.VotingMemberIDs()) },
+	)
+}
+
 // TryTransferLeadershipOnShutdown transfers the leader to the chosen transferee. It is only used in server graceful shutdown.
 func (s *EtcdServer) TryTransferLeadershipOnShutdown() error {
 	lg := s.Logger()
@@ -1287,7 +1330,7 @@ func (s *EtcdServer) TryTransferLeadershipOnShutdown() error {
 		return nil
 	}
 
-	transferee, ok := longestConnected(s.r.transport, s.cluster.VotingMemberIDs())
+	transferee, ok := s.shutdownTransferee()
 	if !ok {
 		return errors.ErrUnhealthy
 	}
@@ -2265,6 +2308,29 @@ func (s *EtcdServer) monitorKVHash() {
 		if err := s.corruptionChecker.PeriodicCheck(); err != nil {
 			lg.Warn("failed to check hash KV", zap.Error(err))
 		}
+	}
+}
+
+// monitorHeirRaftMetrics keeps the etcd_heirraft_* Prometheus gauges
+// (T5.2, metrics.go) fresh. Only started when s.heirRunner is non-nil (a
+// HeirRaft experimental flag is set) -- with it nil, these gauges simply
+// stay at their zero value forever, matching the "flags off =>
+// byte-identical stock behaviour" accept criterion for observability too.
+func (s *EtcdServer) monitorHeirRaftMetrics() {
+	const interval = time.Second
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopping:
+			return
+		case <-t.C:
+		}
+		status := s.raftStatus()
+		heirCurrentHeir.Set(float64(status.Heir))
+		heirChangesTotal.Set(float64(status.HeirChurn))
+		heirGracefulHandoverTotal.Set(float64(status.GracefulHandoverCount))
+		heirNodeStabilityScore.Set(float64(s.heirRunner.Score()))
 	}
 }
 

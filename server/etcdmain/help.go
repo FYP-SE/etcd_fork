@@ -167,6 +167,14 @@ Clustering:
     Reject reconfiguration requests that would cause quorum loss.
   --pre-vote 'true'
     Enable the raft Pre-Vote algorithm to prevent disruption when a node that has been partitioned away rejoins the cluster.
+  --experimental-heir-election 'false'
+    Enable HeirRaft heir-biased election timeouts. Off by default; byte-identical to stock when false.
+  --experimental-heir-log-priority 'false'
+    Enable HeirRaft heir-first log replication dispatch.
+  --experimental-graceful-handover 'false'
+    Enable HeirRaft proactive leadership transfer to the heir on leader score degradation.
+  --experimental-heir-config ''
+    Comma-separated key=value overrides for HeirRaft tunables, e.g. max-heir-lag=512,hysteresis-margin=30. Unset keys keep raft.Config's own defaults.
   --auto-compaction-retention '0'
     Auto compaction retention length. 0 means disable auto compaction.
   --auto-compaction-mode 'periodic'

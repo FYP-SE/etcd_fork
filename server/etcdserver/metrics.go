@@ -148,6 +148,35 @@ var (
 		},
 		[]string{"name", "stage"},
 	)
+	// HeirRaft metrics (T5.2, TASKS.md). All four report 0 (their zero
+	// value) when HeirRaft is disabled -- s.heirRunner is nil and
+	// monitorHeirRaftMetrics is never started, so these gauges simply never
+	// get Set past their initial 0, matching the "flags off => byte-identical
+	// stock behaviour" accept criterion for observability too.
+	heirCurrentHeir = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "current_heir",
+		Help:      "The raft ID of this leader's currently designated heir (DESIGN.md §2.3), or 0 if none.",
+	})
+	heirChangesTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "heir_changes_total",
+		Help:      "The cumulative number of heir replacements (or losses) this raft instance has seen.",
+	})
+	heirNodeStabilityScore = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "node_stability_score",
+		Help:      "This node's own current stability score in [0,255], 255 = most stable (DESIGN.md §2.1).",
+	})
+	heirGracefulHandoverTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "graceful_handover_total",
+		Help:      "The cumulative number of proactive leadership transfers this leader has triggered on score degradation (DESIGN.md §2.6).",
+	})
 	fdUsed = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "os",
 		Subsystem: "fd",
@@ -180,6 +209,10 @@ func init() {
 	prometheus.MustRegister(serverFeatureEnabled)
 	prometheus.MustRegister(learnerPromoteSucceed)
 	prometheus.MustRegister(learnerPromoteFailed)
+	prometheus.MustRegister(heirCurrentHeir)
+	prometheus.MustRegister(heirChangesTotal)
+	prometheus.MustRegister(heirNodeStabilityScore)
+	prometheus.MustRegister(heirGracefulHandoverTotal)
 	prometheus.MustRegister(fdUsed)
 	prometheus.MustRegister(fdLimit)
 

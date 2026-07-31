@@ -152,6 +152,24 @@ type ServerConfig struct {
 	// PreVote is true to enable Raft Pre-Vote.
 	PreVote bool
 
+	// ExperimentalHeirElection enables HeirRaft's heir-biased election
+	// timeouts (DESIGN.md §2.5). Requires ExperimentalStabilityScorer to be
+	// set once wired in bootstrap.go's raftConfig() -- with it false (the
+	// default), raft.Config.StabilityScorer is left nil and the mechanism
+	// is inert, byte-identical to stock (TASKS.md T5.2 accept criterion).
+	ExperimentalHeirElection bool
+	// ExperimentalHeirLogPriority enables sending MsgApp to the heir first
+	// (DESIGN.md §2.7).
+	ExperimentalHeirLogPriority bool
+	// ExperimentalGracefulHandover enables proactive leadership transfer to
+	// the heir when the leader's own score degrades (DESIGN.md §2.6).
+	ExperimentalGracefulHandover bool
+	// ExperimentalHeirConfig is the raw --experimental-heir-config=<k=v,...>
+	// flag value; parsed into HeirTunables and applied onto raft.Config in
+	// bootstrap.go's raftConfig(). Empty string means every tunable is left
+	// to raft.Config.validate()'s own DESIGN.md §5 defaults.
+	ExperimentalHeirConfig string
+
 	// SocketOpts are socket options passed to listener config.
 	SocketOpts transport.SocketOpts
 

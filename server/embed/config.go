@@ -313,6 +313,23 @@ type Config struct {
 	// an election, thus minimizing disruptions.
 	PreVote bool `json:"pre-vote"`
 
+	// ExperimentalHeirElection enables HeirRaft's heir-biased election
+	// timeouts. Off by default; with it (and ExperimentalHeirLogPriority,
+	// ExperimentalGracefulHandover) all false, HeirRaft is fully inert and
+	// behaviour is byte-identical to stock Raft.
+	ExperimentalHeirElection bool `json:"experimental-heir-election"`
+	// ExperimentalHeirLogPriority sends log replication (MsgApp) to the
+	// current heir first, ahead of other followers.
+	ExperimentalHeirLogPriority bool `json:"experimental-heir-log-priority"`
+	// ExperimentalGracefulHandover proactively transfers leadership to the
+	// heir once the leader's own stability score degrades for long enough.
+	ExperimentalGracefulHandover bool `json:"experimental-graceful-handover"`
+	// ExperimentalHeirConfig overrides HeirRaft's tunables (DESIGN.md §5),
+	// e.g. "max-heir-lag=512,hysteresis-margin=30". Keys left unset keep
+	// raft.Config's own defaults. See server/config.ParseHeirTunables for
+	// the full key list.
+	ExperimentalHeirConfig string `json:"experimental-heir-config"`
+
 	CORS map[string]struct{}
 
 	// HostWhitelist lists acceptable hostnames from HTTP client requests.
@@ -685,6 +702,11 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&cfg.StrictReconfigCheck, "strict-reconfig-check", cfg.StrictReconfigCheck, "Reject reconfiguration requests that would cause quorum loss.")
 
 	fs.BoolVar(&cfg.PreVote, "pre-vote", cfg.PreVote, "Enable the raft Pre-Vote algorithm to prevent disruption when a node that has been partitioned away rejoins the cluster.")
+
+	fs.BoolVar(&cfg.ExperimentalHeirElection, "experimental-heir-election", cfg.ExperimentalHeirElection, "Enable HeirRaft heir-biased election timeouts (DESIGN.md §2.5). Off by default; byte-identical to stock when false.")
+	fs.BoolVar(&cfg.ExperimentalHeirLogPriority, "experimental-heir-log-priority", cfg.ExperimentalHeirLogPriority, "Enable HeirRaft heir-first log replication dispatch (DESIGN.md §2.7).")
+	fs.BoolVar(&cfg.ExperimentalGracefulHandover, "experimental-graceful-handover", cfg.ExperimentalGracefulHandover, "Enable HeirRaft proactive leadership transfer to the heir on leader score degradation (DESIGN.md §2.6).")
+	fs.StringVar(&cfg.ExperimentalHeirConfig, "experimental-heir-config", cfg.ExperimentalHeirConfig, "Comma-separated key=value overrides for HeirRaft tunables (DESIGN.md §5), e.g. max-heir-lag=512,hysteresis-margin=30. Unset keys keep raft.Config's own defaults.")
 
 	// security
 	fs.StringVar(&cfg.ClientTLSInfo.CertFile, "cert-file", "", "Path to the client server TLS cert file.")
