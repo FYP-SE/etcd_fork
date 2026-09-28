@@ -158,6 +158,17 @@ func (r *Runner) Score() uint8 { return r.scorer.Score() }
 // jitter signal is off).
 func (r *Runner) HeartbeatInterval() time.Duration { return r.hbInterval }
 
+// SignalHealth returns each signal's smoothed health in [0,1] by name
+// (cpu, memory, fsync, jitter), for the etcd_heirraft_signal_health metric.
+func (r *Runner) SignalHealth() map[string]float64 {
+	return map[string]float64{
+		"cpu":    r.scorer.Health(raftstability.SignalCPU),
+		"memory": r.scorer.Health(raftstability.SignalMemory),
+		"fsync":  r.scorer.Health(raftstability.SignalFsync),
+		"jitter": r.scorer.Health(raftstability.SignalJitter),
+	}
+}
+
 // Critical implements go.etcd.io/raft/v3/stability.CriticalReporter: true
 // if any single signal is critical (DESIGN_UPDATE.md D7).
 func (r *Runner) Critical() bool { return r.scorer.Critical() }

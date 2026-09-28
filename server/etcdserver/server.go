@@ -2332,6 +2332,9 @@ func (s *EtcdServer) monitorHeirRaftMetrics() {
 		heirChangesTotal.Set(float64(status.HeirChurn))
 		heirGracefulHandoverTotal.Set(float64(status.GracefulHandoverCount))
 		heirNodeStabilityScore.Set(float64(s.heirRunner.Score()))
+		for name, h := range s.heirRunner.SignalHealth() {
+			heirSignalHealth.WithLabelValues(name).Set(h)
+		}
 	}
 }
 

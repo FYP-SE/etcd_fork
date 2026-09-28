@@ -170,3 +170,20 @@ func TestRunner_EmptyPeriodDoesNotResetFsync(t *testing.T) {
 		t.Fatalf("Score() %d -> %d over periods with no fsync", before, got)
 	}
 }
+
+func TestRunner_SignalHealth(t *testing.T) {
+	r := newTestRunner(t, Config{Bounds: DefaultBounds()})
+	for i := 0; i < 30; i++ {
+		r.ObserveFsync(80 * time.Millisecond)
+		r.SampleNow()
+	}
+	h := r.SignalHealth()
+	for _, name := range []string{"cpu", "memory", "fsync", "jitter"} {
+		if _, ok := h[name]; !ok {
+			t.Fatalf("SignalHealth() missing %q: %v", name, h)
+		}
+	}
+	if h["fsync"] > 0.05 || h["cpu"] != 1 {
+		t.Fatalf("SignalHealth() = %v, want fsync ~0 and cpu 1", h)
+	}
+}

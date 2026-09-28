@@ -171,6 +171,12 @@ var (
 		Name:      "node_stability_score",
 		Help:      "This node's own current stability score in [0,255], 255 = most stable (DESIGN.md §2.1).",
 	})
+	heirSignalHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "signal_health",
+		Help:      "This node's smoothed health per stability signal in [0,1], 1 = healthy (DESIGN_UPDATE.md D7).",
+	}, []string{"signal"})
 	heirGracefulHandoverTotal = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "etcd",
 		Subsystem: "heirraft",
@@ -210,6 +216,7 @@ func init() {
 	prometheus.MustRegister(learnerPromoteSucceed)
 	prometheus.MustRegister(learnerPromoteFailed)
 	prometheus.MustRegister(heirCurrentHeir)
+	prometheus.MustRegister(heirSignalHealth)
 	prometheus.MustRegister(heirChangesTotal)
 	prometheus.MustRegister(heirNodeStabilityScore)
 	prometheus.MustRegister(heirGracefulHandoverTotal)
