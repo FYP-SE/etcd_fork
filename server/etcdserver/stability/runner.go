@@ -77,6 +77,18 @@ func DefaultBounds() map[raftstability.Signal]raftstability.Bounds {
 // and is not sampled.
 const maxHeartbeatGapIntervals = 5
 
+// Critical alarm (2026-09-28): a signal is critical once its RAW value for
+// a sampling period, normalised with the same bounds as the score, is at or
+// below criticalLevel for criticalPeriods consecutive periods that had a
+// sample for it. Driving the alarm from the smoothed EWMA instead took ~10
+// periods (~5 s) to go critical, so a slow-disk leader handed over only
+// after 6.8 s (smoke batch 20260928_220425). The smoothed score still ranks
+// heirs.
+const (
+	criticalLevel   = 0.1
+	criticalPeriods = 2
+)
+
 const defaultPeriod = 500 * time.Millisecond
 
 // Config configures a Runner.
@@ -102,6 +114,11 @@ type Runner struct {
 	cpu    CPUSampler
 	mem    MemSampler
 	scorer *raftstability.EWMAScorer
+	bounds map[raftstability.Signal]raftstability.Bounds
+
+	// criticalRun[sig]: consecutive periods with evidence in which sig's
+	// raw period value was critical. Guarded by aggMu.
+	criticalRun [4]int
 
 	hbInterval time.Duration
 
@@ -110,12 +127,15 @@ type Runner struct {
 	// period into the EWMA. Fed per operation, one fast fsync on a
 	// throttled disk lifted the signal above CriticalLevel and broke the
 	// leader's DegradeWindow run (graceful handover took 25 s, 2026-09-28).
-	aggMu     sync.Mutex
-	hbLast    time.Time
-	fsyncSum  time.Duration
-	fsyncN    int
-	jitterSum time.Duration
-	jitterN   int
+	aggMu    sync.Mutex
+	hbLast   time.Time
+	hbFrom   uint64
+	fsyncSum time.Duration
+	fsyncN   int
+	// jitterMaxLate: the period's largest (gap - interval), floored at 0;
+	// jitterGaps: how many gaps were seen (0 = no heartbeat evidence).
+	jitterMaxLate time.Duration
+	jitterGaps    int
 }
 
 // NewRunner builds a Runner. cfg.Bounds must have entries for CPU, Memory,
@@ -147,6 +167,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 		cpu:        cfg.CPU,
 		mem:        cfg.Mem,
 		scorer:     scorer,
+		bounds:     cfg.Bounds,
 		hbInterval: cfg.HeartbeatInterval,
 	}, nil
 }
@@ -169,36 +190,71 @@ func (r *Runner) SignalHealth() map[string]float64 {
 	}
 }
 
-// Critical implements go.etcd.io/raft/v3/stability.CriticalReporter: true
-// if any single signal is critical (DESIGN_UPDATE.md D7).
-func (r *Runner) Critical() bool { return r.scorer.Critical() }
+// Critical implements go.etcd.io/raft/v3/stability.CriticalReporter: true if
+// any single signal's raw period value has been critical for criticalPeriods
+// consecutive periods with evidence (DESIGN_UPDATE.md D7).
+func (r *Runner) Critical() bool {
+	r.aggMu.Lock()
+	defer r.aggMu.Unlock()
+	for _, n := range r.criticalRun {
+		if n >= criticalPeriods {
+			return true
+		}
+	}
+	return false
+}
 
-// ObserveHeartbeat feeds the jitter signal from one MsgHeartbeat arrival
-// from the leader at time now: the sample is |gap - HeartbeatInterval|.
-// Measured locally on each follower, so a node with a worse link to the
-// leader scores worse without any new messages. The first arrival and gaps
-// over maxHeartbeatGapIntervals (leader change, restart) are not sampled.
-func (r *Runner) ObserveHeartbeat(now time.Time) {
+// observePeriod feeds one period's raw value for sig into the EWMA and the
+// critical run.
+func (r *Runner) observePeriod(sig raftstability.Signal, value float64) {
+	r.scorer.Sample(sig, value)
+	b, ok := r.bounds[sig]
+	if !ok {
+		return
+	}
+	health := 1 - (value-b.Min)/(b.Max-b.Min)
+	r.aggMu.Lock()
+	if health <= criticalLevel {
+		r.criticalRun[sig]++
+	} else {
+		r.criticalRun[sig] = 0
+	}
+	r.aggMu.Unlock()
+}
+
+// ObserveHeartbeat records one MsgHeartbeat arrival from leader `from` at
+// time now, for the jitter signal. The signal is heartbeat LATENESS: per
+// sampling period, the largest gap between consecutive heartbeats from the
+// same leader minus HeartbeatInterval (0 if none was late). Every heartbeat
+// counts, with or without a ReadIndex Context: extra read heartbeats only
+// shorten gaps, and raft's regular tick heartbeat itself carries the
+// pending read context while a read is outstanding, so it cannot be
+// filtered out (2026-09-29). A different sender (leader change) starts a
+// new series, and gaps over maxHeartbeatGapIntervals are not sampled.
+// Measured locally on each follower; no new messages.
+func (r *Runner) ObserveHeartbeat(from uint64, now time.Time) {
 	if r.hbInterval <= 0 {
 		return
 	}
 	r.aggMu.Lock()
 	defer r.aggMu.Unlock()
-	last := r.hbLast
-	r.hbLast = now
-	if last.IsZero() {
+	last, lastFrom := r.hbLast, r.hbFrom
+	r.hbLast, r.hbFrom = now, from
+	if last.IsZero() || from != lastFrom {
 		return
 	}
 	gap := now.Sub(last)
 	if gap < 0 || gap > maxHeartbeatGapIntervals*r.hbInterval {
 		return
 	}
-	dev := gap - r.hbInterval
-	if dev < 0 {
-		dev = -dev
+	late := gap - r.hbInterval
+	if late < 0 {
+		late = 0
 	}
-	r.jitterSum += dev
-	r.jitterN++
+	if late > r.jitterMaxLate {
+		r.jitterMaxLate = late
+	}
+	r.jitterGaps++
 }
 
 // ObserveFsync feeds one WAL fsync latency sample into the fsync signal.
@@ -223,14 +279,21 @@ func (r *Runner) SampleNow() { r.sampleOnce() }
 // (T5.1 accept criterion: "scorer value visible in etcd log at debug").
 func (r *Runner) sampleOnce() {
 	r.aggMu.Lock()
-	fsyncSum, fsyncN, jitterSum, jitterN := r.fsyncSum, r.fsyncN, r.jitterSum, r.jitterN
-	r.fsyncSum, r.fsyncN, r.jitterSum, r.jitterN = 0, 0, 0, 0
+	fsyncSum, fsyncN, jitterLate, jitterGaps := r.fsyncSum, r.fsyncN, r.jitterMaxLate, r.jitterGaps
+	r.fsyncSum, r.fsyncN, r.jitterMaxLate, r.jitterGaps = 0, 0, 0, 0
+	if jitterGaps == 0 && r.hbInterval > 0 {
+		// No heartbeat evidence this period: this node is the leader or has
+		// lost it. Jitter evidence is void, so a new leader cannot inherit a
+		// follower-time jitter alarm. (fsync keeps no-evidence = unchanged:
+		// sparse fsyncs are normal.)
+		r.criticalRun[raftstability.SignalJitter] = 0
+	}
 	r.aggMu.Unlock()
 	if fsyncN > 0 {
-		r.scorer.Sample(raftstability.SignalFsync, (fsyncSum / time.Duration(fsyncN)).Seconds())
+		r.observePeriod(raftstability.SignalFsync, (fsyncSum / time.Duration(fsyncN)).Seconds())
 	}
-	if jitterN > 0 {
-		r.scorer.Sample(raftstability.SignalJitter, (jitterSum / time.Duration(jitterN)).Seconds())
+	if jitterGaps > 0 {
+		r.observePeriod(raftstability.SignalJitter, jitterLate.Seconds())
 	}
 	if r.cpu != nil {
 		if v, err := r.cpu.Sample(); err != nil {
@@ -240,14 +303,14 @@ func (r *Runner) sampleOnce() {
 				r.lg.Warn("stability: CPU sample failed", zap.Error(err))
 			}
 		} else {
-			r.scorer.Sample(raftstability.SignalCPU, v)
+			r.observePeriod(raftstability.SignalCPU, v)
 		}
 	}
 	if r.mem != nil {
 		if v, err := r.mem.Sample(); err != nil {
 			r.lg.Warn("stability: memory sample failed", zap.Error(err))
 		} else {
-			r.scorer.Sample(raftstability.SignalMemory, v)
+			r.observePeriod(raftstability.SignalMemory, v)
 		}
 	}
 	r.lg.Debug("stability: score updated", zap.Uint8("score", r.scorer.Score()))

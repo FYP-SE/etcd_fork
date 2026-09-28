@@ -44,15 +44,17 @@ func TestRunner_FiftyMsFsyncIsCritical(t *testing.T) {
 // as Run's 500 ms ticker would at a 100 ms heartbeat.
 func heartbeats(r *Runner, start time.Time, gaps ...time.Duration) time.Time {
 	now := start
-	r.ObserveHeartbeat(now)
+	r.ObserveHeartbeat(1, now)
 	for i, g := range gaps {
 		now = now.Add(g)
-		r.ObserveHeartbeat(now)
+		r.ObserveHeartbeat(1, now)
 		if i%5 == 4 {
 			r.SampleNow()
 		}
 	}
-	r.SampleNow()
+	if len(gaps)%5 != 0 {
+		r.SampleNow() // flush a partial period only: an empty period is "no heartbeats"
+	}
 	return now
 }
 

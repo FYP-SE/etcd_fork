@@ -99,11 +99,9 @@ func TestObserveHeirHeartbeat(t *testing.T) {
 	observeHeirHeartbeat(nil, hb, now) // HeirRaft off: must not panic
 }
 
-// ReadIndex heartbeats (linearizable reads) carry a Context and are sent
-// whenever a read arrives, not on the heartbeat tick. Counting them made
-// every follower look jittery under a read-probing client (found in the
-// 2026-09-28 integration run: healthy followers scored ~186, the leader
-// ~230). Only plain tick heartbeats feed the jitter signal.
+// Heartbeats with a ReadIndex Context -- off-tick read heartbeats, and
+// regular tick heartbeats while a read is pending -- must not look like
+// jitter (stability/runner_jitter_test.go explains the lateness measure).
 func TestObserveHeirHeartbeat_IgnoresReadIndexHeartbeats(t *testing.T) {
 	// No CPU/memory samplers: only the jitter signal can move the score.
 	runner, err := stability.NewRunner(stability.Config{

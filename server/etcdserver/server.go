@@ -2540,10 +2540,11 @@ func addFeatureGateMetrics(fg featuregate.FeatureGate, guageVec *prometheus.Gaug
 // D7) from a leader heartbeat arriving at this member. A no-op when HeirRaft
 // is off (runner nil) or for any other message type.
 func observeHeirHeartbeat(runner *stability.Runner, m *raftpb.Message, now time.Time) {
-	// Only plain tick heartbeats: ReadIndex heartbeats carry a Context and
-	// are sent whenever a linearizable read arrives, off the tick.
-	if runner == nil || m.GetType() != raftpb.MsgHeartbeat || len(m.GetContext()) != 0 {
+	// Every heartbeat counts, with or without a ReadIndex Context: the
+	// jitter signal measures lateness, which extra heartbeats cannot fake
+	// (stability.Runner.ObserveHeartbeat).
+	if runner == nil || m.GetType() != raftpb.MsgHeartbeat {
 		return
 	}
-	runner.ObserveHeartbeat(now)
+	runner.ObserveHeartbeat(m.GetFrom(), now)
 }
