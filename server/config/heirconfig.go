@@ -14,6 +14,7 @@ import (
 type HeirTunables struct {
 	FreshnessSlack    int
 	HeirSyncGrace     int
+	HeirTimeout       int
 	HysteresisMargin  uint8
 	MinHeirTenure     int
 	HeirJitter        float64
@@ -65,6 +66,14 @@ func ParseHeirTunables(s string) (HeirTunables, error) {
 				return HeirTunables{}, err
 			}
 			t.HeirSyncGrace = v
+		case "heir-timeout":
+			// DESIGN_UPDATE.md D1, in ticks; raft.Config validates the
+			// range (2 <= H < ElectionTick, H > HeartbeatTick).
+			v, err := parseNonNegInt(key, value)
+			if err != nil {
+				return HeirTunables{}, err
+			}
+			t.HeirTimeout = v
 		case "hysteresis-margin":
 			v, err := parseUint(key, value, 8)
 			if err != nil {

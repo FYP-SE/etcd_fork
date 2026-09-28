@@ -23,7 +23,7 @@ func TestParseHeirTunables_EmptyStringIsAllZero(t *testing.T) {
 }
 
 func TestParseHeirTunables_AllKeysRecognised(t *testing.T) {
-	got, err := ParseHeirTunables("freshness-slack=2,heir-sync-grace=15,hysteresis-margin=30,min-heir-tenure=5," +
+	got, err := ParseHeirTunables("freshness-slack=2,heir-sync-grace=15,heir-timeout=4,hysteresis-margin=30,min-heir-tenure=5," +
 		"heir-jitter=0.15,non-heir-backoff=2.0," +
 		"handover-threshold=180,degrade-window=4,handover-cooldown=3")
 	if err != nil {
@@ -32,6 +32,7 @@ func TestParseHeirTunables_AllKeysRecognised(t *testing.T) {
 	want := HeirTunables{
 		FreshnessSlack:    2,
 		HeirSyncGrace:     15,
+		HeirTimeout:       4,
 		HysteresisMargin:  30,
 		MinHeirTenure:     5,
 		HeirJitter:        0.15,
@@ -133,7 +134,7 @@ func TestParseHeirTunables_FreshnessSlackZeroIsStrict(t *testing.T) {
 }
 
 func TestParseHeirTunables_NegativeSlackAndGraceRejected(t *testing.T) {
-	for _, in := range []string{"freshness-slack=-1", "heir-sync-grace=-1"} {
+	for _, in := range []string{"freshness-slack=-1", "heir-sync-grace=-1", "heir-timeout=-1"} {
 		if _, err := ParseHeirTunables(in); err == nil {
 			t.Errorf("ParseHeirTunables(%q) succeeded, want error", in)
 		}
