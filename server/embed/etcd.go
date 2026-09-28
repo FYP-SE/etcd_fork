@@ -219,6 +219,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		PreVote:                           cfg.PreVote,
 		ExperimentalHeirElection:          cfg.ExperimentalHeirElection,
 		ExperimentalHeirLogPriority:       cfg.ExperimentalHeirLogPriority,
+		ExperimentalHeirLease:             cfg.ExperimentalHeirLease,
 		ExperimentalGracefulHandover:      cfg.ExperimentalGracefulHandover,
 		ExperimentalHeirConfig:            cfg.ExperimentalHeirConfig,
 		Logger:                            cfg.logger,

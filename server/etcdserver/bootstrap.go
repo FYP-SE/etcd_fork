@@ -592,9 +592,11 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 
 	runner, err := stability.NewRunner(stability.Config{
 		Logger: cfg.Logger.Named("heirraft-stability"),
-		CPU:    stability.NewCPUSampler(),
+		CPU:    stability.NewCPUPressureSampler(), // DESIGN_UPDATE.md D7: pressure, not usage
 		Mem:    stability.NewMemSampler(),
 		Bounds: stability.DefaultBounds(),
+		// HeartbeatTick is 1 (above), so the heartbeat period is one tick.
+		HeartbeatInterval: time.Duration(cfg.TickMs) * time.Millisecond,
 	})
 	if err != nil {
 		cfg.Logger.Panic("failed to build HeirRaft stability scorer", zap.Error(err))
@@ -603,6 +605,7 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 	rc.StabilityScorer = runner
 	rc.HeirElection = cfg.ExperimentalHeirElection
 	rc.HeirLogPriority = cfg.ExperimentalHeirLogPriority
+	rc.HeirLease = cfg.ExperimentalHeirLease
 	rc.GracefulHandover = cfg.ExperimentalGracefulHandover
 	rc.FreshnessSlack = tunables.FreshnessSlack
 	rc.HeirSyncGrace = tunables.HeirSyncGrace

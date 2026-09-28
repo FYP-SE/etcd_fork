@@ -73,11 +73,14 @@ func TestRunner_SampleOnceFeedsCPUAndMem(t *testing.T) {
 	if after >= before {
 		t.Fatalf("Score() after 50 unhealthy samples = %d, want < initial %d", after, before)
 	}
-	// fsync is never sampled here, so its EWMA stays at the healthy default
-	// (1.0) and alone contributes its full v1Weights share (.375) to the
-	// composite once CPU/mem have converged to 0: floor ~= .375*255 = 96.
-	if wantFloor := uint8(100); after > wantFloor {
-		t.Fatalf("Score() = %d after sustained unhealthy CPU+mem samples, want <= %d (fsync-only floor)", after, wantFloor)
+	// fsync and jitter are never sampled here, so they stay at the healthy
+	// default (1.0) and contribute their weights (.3 + .2, DESIGN_UPDATE.md
+	// D7) once CPU/mem have converged to 0: floor ~= .5*255 = 128.
+	if wantFloor := uint8(130); after > wantFloor {
+		t.Fatalf("Score() = %d after sustained unhealthy CPU+mem samples, want <= %d (fsync+jitter floor)", after, wantFloor)
+	}
+	if !r.Critical() {
+		t.Fatal("Critical() = false with CPU and memory pinned fully bad")
 	}
 }
 

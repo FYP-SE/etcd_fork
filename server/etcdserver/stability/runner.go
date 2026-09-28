@@ -6,20 +6,20 @@
 // package is self-contained and etcd-startup-agnostic so it can be unit
 // tested with fake samplers.
 //
-// RTT jitter (DESIGN.md §2.1's fourth signal) is intentionally omitted in
-// this version: TASKS.md's T5.1 text permits "RTT jitter ... if available,
-// else omit v1 and note", and DESIGN.md doesn't specify how to aggregate the
-// per-peer RTT samples rafthttp already collects (etcd's peer prober is
-// per-follower; a leader has one RTT series per peer, not one local scalar)
-// into the single local signal EWMAScorer.Sample expects -- that's a design
-// question left to the supervisors, not something to improvise (see project
-// root CLAUDE.md's working-conventions on this). The remaining three
-// signals' weights (DESIGN.md §5 defaults: CPU .3, mem .2, fsync .3) are
-// renormalised to sum to 1 -- see v1Weights.
+// DESIGN_UPDATE.md D7 (2026-09-28): four signals -- CPU pressure (PSI, not
+// usage), memory, WAL fsync latency (fully bad at 50 ms, not 1 s), and
+// heartbeat jitter, measured locally on a follower from the variation in
+// the leader's heartbeat inter-arrival times (no new messages). Weights are
+// DESIGN.md §5's defaults (CPU .3, mem .2, fsync .3, jitter .2). The
+// weighted score ranks heirs; Critical() reports any single critical signal
+// so the leader can hand over (weighted + critical trigger, chosen by
+// Piyumi).
 package stability
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -40,40 +40,54 @@ type MemSampler interface {
 	Sample() (float64, error)
 }
 
-// v1Weights is DESIGN.md §5's default composite (CPU .3, mem .2, fsync .3,
-// jitter .2), minus the omitted jitter signal, renormalised so the
-// remaining three still sum to 1: .3/.8=.375, .2/.8=.25, .3/.8=.375.
-func v1Weights() map[raftstability.Signal]float64 {
+// weights is DESIGN.md §5's default composite: CPU .3, mem .2, fsync .3,
+// jitter .2. Any single fully bad signal lowers the score by >= 51 of 255,
+// above 2x the default HysteresisMargin (DESIGN_UPDATE.md D7).
+func weights() map[raftstability.Signal]float64 {
 	return map[raftstability.Signal]float64{
-		raftstability.SignalCPU:    0.375,
-		raftstability.SignalMemory: 0.25,
-		raftstability.SignalFsync:  0.375,
+		raftstability.SignalCPU:    0.3,
+		raftstability.SignalMemory: 0.2,
+		raftstability.SignalFsync:  0.3,
+		raftstability.SignalJitter: 0.2,
 	}
 }
 
-// DefaultBounds gives sane reference bounds for the three v1 signals:
-//   - CPU / memory are already normalised fractions by this package's
-//     samplers, so their bounds are simply [0,1].
-//   - WAL fsync latency defaults to healthy at 1ms, fully unhealthy at 1s --
-//     these are etcd-specific and host/disk dependent, so callers with a
-//     different storage profile should override this entry in Config.Bounds.
+// DefaultBounds gives the reference bounds (healthy at Min, fully bad at
+// Max) for the four signals (DESIGN_UPDATE.md D7):
+//   - CPU pressure (stall fraction): healthy <= 2 %, fully bad at 50 %.
+//   - memory (fraction of limit): [0,1], unchanged from v1.
+//   - WAL fsync: healthy 1 ms, fully bad 50 ms (etcd's guidance is p99 <
+//     10 ms; v1's 1 s bound made the signal useless).
+//   - heartbeat jitter (|inter-arrival - interval|): healthy 2 ms, fully
+//     bad 100 ms, i.e. a whole heartbeat interval off.
+//
+// All host dependent: callers can override entries in Config.Bounds.
 func DefaultBounds() map[raftstability.Signal]raftstability.Bounds {
 	return map[raftstability.Signal]raftstability.Bounds{
-		raftstability.SignalCPU:    {Min: 0, Max: 1},
+		raftstability.SignalCPU:    {Min: 0.02, Max: 0.5},
 		raftstability.SignalMemory: {Min: 0, Max: 1},
-		raftstability.SignalFsync:  {Min: 0.001, Max: 1.0},
+		raftstability.SignalFsync:  {Min: 0.001, Max: 0.05},
+		raftstability.SignalJitter: {Min: 0.002, Max: 0.1},
 	}
 }
+
+// maxHeartbeatGapIntervals: an inter-arrival gap longer than this many
+// heartbeat intervals is a leader change, restart or partition, not jitter,
+// and is not sampled.
+const maxHeartbeatGapIntervals = 5
 
 const defaultPeriod = 500 * time.Millisecond
 
 // Config configures a Runner.
 type Config struct {
-	Logger *zap.Logger // defaults to a no-op logger if nil
-	Period time.Duration // CPU/mem sampling period; defaults to 500ms (T5.1 accept criterion)
-	CPU    CPUSampler    // optional; nil means the CPU signal is never sampled
-	Mem    MemSampler    // optional; nil means the memory signal is never sampled
+	Logger *zap.Logger                                   // defaults to a no-op logger if nil
+	Period time.Duration                                 // CPU/mem sampling period; defaults to 500ms (T5.1 accept criterion)
+	CPU    CPUSampler                                    // optional; nil means the CPU signal is never sampled
+	Mem    MemSampler                                    // optional; nil means the memory signal is never sampled
 	Bounds map[raftstability.Signal]raftstability.Bounds // required; see DefaultBounds
+	// HeartbeatInterval is the leader's heartbeat period. Zero disables the
+	// jitter signal (ObserveHeartbeat becomes a no-op).
+	HeartbeatInterval time.Duration
 }
 
 // Runner periodically samples CPU/memory and exposes a push-style hook for
@@ -87,6 +101,10 @@ type Runner struct {
 	cpu    CPUSampler
 	mem    MemSampler
 	scorer *raftstability.EWMAScorer
+
+	hbInterval time.Duration
+	hbMu       sync.Mutex
+	hbLast     time.Time
 }
 
 // NewRunner builds a Runner. cfg.Bounds must have entries for CPU, Memory,
@@ -94,9 +112,10 @@ type Runner struct {
 // may be nil to disable that signal.
 func NewRunner(cfg Config) (*Runner, error) {
 	scorer, err := raftstability.NewEWMAScorer(raftstability.EWMAConfig{
-		Alpha:   0.2,
-		Weights: v1Weights(),
-		Bounds:  cfg.Bounds,
+		Alpha:         0.2,
+		Weights:       weights(),
+		Bounds:        cfg.Bounds,
+		CriticalLevel: 0.1,
 	})
 	if err != nil {
 		return nil, err
@@ -112,16 +131,52 @@ func NewRunner(cfg Config) (*Runner, error) {
 	}
 
 	return &Runner{
-		lg:     lg,
-		period: period,
-		cpu:    cfg.CPU,
-		mem:    cfg.Mem,
-		scorer: scorer,
+		lg:         lg,
+		period:     period,
+		cpu:        cfg.CPU,
+		mem:        cfg.Mem,
+		scorer:     scorer,
+		hbInterval: cfg.HeartbeatInterval,
 	}, nil
 }
 
 // Score implements go.etcd.io/raft/v3/stability.Scorer.
 func (r *Runner) Score() uint8 { return r.scorer.Score() }
+
+// HeartbeatInterval returns the configured leader heartbeat period (0 = the
+// jitter signal is off).
+func (r *Runner) HeartbeatInterval() time.Duration { return r.hbInterval }
+
+// Critical implements go.etcd.io/raft/v3/stability.CriticalReporter: true
+// if any single signal is critical (DESIGN_UPDATE.md D7).
+func (r *Runner) Critical() bool { return r.scorer.Critical() }
+
+// ObserveHeartbeat feeds the jitter signal from one MsgHeartbeat arrival
+// from the leader at time now: the sample is |gap - HeartbeatInterval|.
+// Measured locally on each follower, so a node with a worse link to the
+// leader scores worse without any new messages. The first arrival and gaps
+// over maxHeartbeatGapIntervals (leader change, restart) are not sampled.
+func (r *Runner) ObserveHeartbeat(now time.Time) {
+	if r.hbInterval <= 0 {
+		return
+	}
+	r.hbMu.Lock()
+	last := r.hbLast
+	r.hbLast = now
+	r.hbMu.Unlock()
+	if last.IsZero() {
+		return
+	}
+	gap := now.Sub(last)
+	if gap < 0 || gap > maxHeartbeatGapIntervals*r.hbInterval {
+		return
+	}
+	dev := gap - r.hbInterval
+	if dev < 0 {
+		dev = -dev
+	}
+	r.scorer.Sample(raftstability.SignalJitter, dev.Seconds())
+}
 
 // ObserveFsync feeds one WAL fsync latency sample into the fsync signal.
 // Safe to call from any goroutine. This is the hook etcd's WAL package will
@@ -137,7 +192,11 @@ func (r *Runner) ObserveFsync(d time.Duration) {
 func (r *Runner) sampleOnce() {
 	if r.cpu != nil {
 		if v, err := r.cpu.Sample(); err != nil {
-			r.lg.Warn("stability: CPU sample failed", zap.Error(err))
+			// The first sample of a delta-based sampler has no history yet:
+			// expected once per start, not worth a warning.
+			if !errors.Is(err, errNoPressureHistory) {
+				r.lg.Warn("stability: CPU sample failed", zap.Error(err))
+			}
 		} else {
 			r.scorer.Sample(raftstability.SignalCPU, v)
 		}

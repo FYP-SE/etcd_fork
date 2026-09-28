@@ -22,7 +22,7 @@ import (
 	"go.etcd.io/etcd/tests/v3/robustness/traffic"
 )
 
-// withHeirRaftEnabled turns on all three HeirRaft experimental flags
+// withHeirRaftEnabled turns on all HeirRaft experimental flags
 // (T5.2). embed.Config.AddFlags already registers
 // --experimental-heir-election/-graceful-handover/-log-priority, and the
 // e2e framework's EtcdServerProcessConfig diffs cfg.ServerConfig against
@@ -34,6 +34,7 @@ func withHeirRaftEnabled(c *e2e.EtcdProcessClusterConfig) {
 	c.ServerConfig.ExperimentalHeirElection = true
 	c.ServerConfig.ExperimentalGracefulHandover = true
 	c.ServerConfig.ExperimentalHeirLogPriority = true
+	c.ServerConfig.ExperimentalHeirLease = true // DESIGN_UPDATE.md D2
 }
 
 // HeirRaftFailover is T6.3: run the robustness (linearizability/watch

@@ -161,6 +161,8 @@ type ServerConfig struct {
 	// ExperimentalHeirLogPriority enables sending MsgApp to the heir first
 	// (DESIGN.md §2.7).
 	ExperimentalHeirLogPriority bool
+	// ExperimentalHeirLease enables the heir lease (DESIGN_UPDATE.md D2).
+	ExperimentalHeirLease bool
 	// ExperimentalGracefulHandover enables proactive leadership transfer to
 	// the heir when the leader's own score degrades (DESIGN.md §2.6).
 	ExperimentalGracefulHandover bool

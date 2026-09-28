@@ -116,7 +116,7 @@ func TestProcCPUSampler_CgroupV2_UnlimitedQuotaFallsBackToNumCPU(t *testing.T) {
 	s := newProcCPUSampler(dir, dir)
 	s.now = func() time.Time { return fakeNow }
 	s.numCPU = 2 // pin, instead of depending on the test host's real core count
-	s.Sample() // priming call
+	s.Sample()   // priming call
 
 	fakeNow = fakeNow.Add(time.Second)
 	// 1,000,000 usec of CPU time used in 1s wall time across 2 cores -> 0.5 busy.
@@ -167,8 +167,8 @@ func TestProcCPUSampler_ErrorsWhenNeitherSourceAvailable(t *testing.T) {
 
 func TestProcMemSampler_CgroupV2_UsesCurrentOverMax(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "memory.current", "500000000\n")  // 500MB
-	writeFile(t, dir, "memory.max", "1000000000\n")      // 1GB limit
+	writeFile(t, dir, "memory.current", "500000000\n") // 500MB
+	writeFile(t, dir, "memory.max", "1000000000\n")    // 1GB limit
 
 	s := newProcMemSampler(dir, dir)
 	got, err := s.Sample()

@@ -171,6 +171,8 @@ Clustering:
     Enable HeirRaft heir-biased election timeouts. Off by default; byte-identical to stock when false.
   --experimental-heir-log-priority 'false'
     Enable HeirRaft heir-first log replication dispatch.
+  --experimental-heir-lease 'false'
+    Enable the HeirRaft heir lease: voters accept the announced heir early once they too have lost the leader. Requires --experimental-heir-election.
   --experimental-graceful-handover 'false'
     Enable HeirRaft proactive leadership transfer to the heir on leader score degradation.
   --experimental-heir-config ''

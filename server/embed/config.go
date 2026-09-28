@@ -321,6 +321,11 @@ type Config struct {
 	// ExperimentalHeirLogPriority sends log replication (MsgApp) to the
 	// current heir first, ahead of other followers.
 	ExperimentalHeirLogPriority bool `json:"experimental-heir-log-priority"`
+	// ExperimentalHeirLease lets voters skip the CheckQuorum lease for the
+	// announced heir once they have themselves not heard from the leader
+	// for the heir timeout (DESIGN_UPDATE.md D2). Only meaningful with
+	// ExperimentalHeirElection.
+	ExperimentalHeirLease bool `json:"experimental-heir-lease"`
 	// ExperimentalGracefulHandover proactively transfers leadership to the
 	// heir once the leader's own stability score degrades for long enough.
 	ExperimentalGracefulHandover bool `json:"experimental-graceful-handover"`
@@ -705,6 +710,7 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 
 	fs.BoolVar(&cfg.ExperimentalHeirElection, "experimental-heir-election", cfg.ExperimentalHeirElection, "Enable HeirRaft heir-biased election timeouts (DESIGN.md §2.5). Off by default; byte-identical to stock when false.")
 	fs.BoolVar(&cfg.ExperimentalHeirLogPriority, "experimental-heir-log-priority", cfg.ExperimentalHeirLogPriority, "Enable HeirRaft heir-first log replication dispatch (DESIGN.md §2.7).")
+	fs.BoolVar(&cfg.ExperimentalHeirLease, "experimental-heir-lease", cfg.ExperimentalHeirLease, "Enable the HeirRaft heir lease: voters accept the announced heir early once they too have lost the leader (DESIGN_UPDATE.md D2). Requires --experimental-heir-election.")
 	fs.BoolVar(&cfg.ExperimentalGracefulHandover, "experimental-graceful-handover", cfg.ExperimentalGracefulHandover, "Enable HeirRaft proactive leadership transfer to the heir on leader score degradation (DESIGN.md §2.6).")
 	fs.StringVar(&cfg.ExperimentalHeirConfig, "experimental-heir-config", cfg.ExperimentalHeirConfig, "Comma-separated key=value overrides for HeirRaft tunables (DESIGN.md §5), e.g. freshness-slack=1,heir-sync-grace=10. Unset keys keep raft.Config's own defaults.")
 
