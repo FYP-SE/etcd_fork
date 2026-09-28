@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/server/v3/config"
+	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 )
@@ -88,6 +89,9 @@ func TestObserveHeirHeartbeat(t *testing.T) {
 		}
 		now = now.Add(gap)
 		observeHeirHeartbeat(runner, hb, now)
+		if i%5 == 4 {
+			runner.SampleNow()
+		}
 	}
 	if !runner.Critical() {
 		t.Fatal("jittery heartbeats through observeHeirHeartbeat did not reach the runner")
@@ -101,13 +105,14 @@ func TestObserveHeirHeartbeat(t *testing.T) {
 // 2026-09-28 integration run: healthy followers scored ~186, the leader
 // ~230). Only plain tick heartbeats feed the jitter signal.
 func TestObserveHeirHeartbeat_IgnoresReadIndexHeartbeats(t *testing.T) {
-	cfg := config.ServerConfig{
-		Logger:                   zaptest.NewLogger(t),
-		ElectionTicks:            10,
-		TickMs:                   100,
-		ExperimentalHeirElection: true,
+	// No CPU/memory samplers: only the jitter signal can move the score.
+	runner, err := stability.NewRunner(stability.Config{
+		Bounds:            stability.DefaultBounds(),
+		HeartbeatInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, runner := raftConfig(cfg, 1, raft.NewMemoryStorage())
 	plain := &raftpb.Message{Type: raftpb.MsgHeartbeat.Enum()}
 	readIdx := &raftpb.Message{Type: raftpb.MsgHeartbeat.Enum(), Context: []byte("read-request-id")}
 	now := time.Unix(0, 0)
@@ -115,6 +120,9 @@ func TestObserveHeirHeartbeat_IgnoresReadIndexHeartbeats(t *testing.T) {
 		now = now.Add(100 * time.Millisecond)
 		observeHeirHeartbeat(runner, plain, now)
 		observeHeirHeartbeat(runner, readIdx, now.Add(37*time.Millisecond)) // off-tick
+		if i%5 == 4 {
+			runner.SampleNow()
+		}
 	}
 	if runner.Critical() || runner.Score() != 255 {
 		t.Fatalf("score %d critical %v: ReadIndex heartbeats leaked into the jitter signal", runner.Score(), runner.Critical())

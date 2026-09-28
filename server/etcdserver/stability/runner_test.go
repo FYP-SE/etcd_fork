@@ -103,6 +103,7 @@ func TestRunner_ObserveFsyncFeedsScore(t *testing.T) {
 	before := r.Score()
 	for i := 0; i < 50; i++ {
 		r.ObserveFsync(2 * time.Second) // far past DefaultBounds' fsync Max
+		r.SampleNow() // fsync is aggregated per sampling period
 	}
 	after := r.Score()
 	if after >= before {

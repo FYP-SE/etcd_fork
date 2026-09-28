@@ -56,8 +56,9 @@ func weights() map[raftstability.Signal]float64 {
 // Max) for the four signals (DESIGN_UPDATE.md D7):
 //   - CPU pressure (stall fraction): healthy <= 2 %, fully bad at 50 %.
 //   - memory (fraction of limit): [0,1], unchanged from v1.
-//   - WAL fsync: healthy 1 ms, fully bad 50 ms (etcd's guidance is p99 <
-//     10 ms; v1's 1 s bound made the signal useless).
+//   - WAL fsync: healthy up to 10 ms (etcd's guidance: p99 < 10 ms), fully
+//     bad at 50 ms (v1's 1 s bound made the signal useless). The 10 ms floor
+//     keeps ordinary disk jitter out of the score (measured 2026-09-28).
 //   - heartbeat jitter (|inter-arrival - interval|): healthy 2 ms, fully
 //     bad 100 ms, i.e. a whole heartbeat interval off.
 //
@@ -66,7 +67,7 @@ func DefaultBounds() map[raftstability.Signal]raftstability.Bounds {
 	return map[raftstability.Signal]raftstability.Bounds{
 		raftstability.SignalCPU:    {Min: 0.02, Max: 0.5},
 		raftstability.SignalMemory: {Min: 0, Max: 1},
-		raftstability.SignalFsync:  {Min: 0.001, Max: 0.05},
+		raftstability.SignalFsync:  {Min: 0.010, Max: 0.05},
 		raftstability.SignalJitter: {Min: 0.002, Max: 0.1},
 	}
 }
@@ -103,8 +104,18 @@ type Runner struct {
 	scorer *raftstability.EWMAScorer
 
 	hbInterval time.Duration
-	hbMu       sync.Mutex
-	hbLast     time.Time
+
+	// Per-period accumulators (guarded by aggMu). fsync and heartbeat
+	// jitter arrive per operation; SampleNow feeds each one's MEAN over the
+	// period into the EWMA. Fed per operation, one fast fsync on a
+	// throttled disk lifted the signal above CriticalLevel and broke the
+	// leader's DegradeWindow run (graceful handover took 25 s, 2026-09-28).
+	aggMu     sync.Mutex
+	hbLast    time.Time
+	fsyncSum  time.Duration
+	fsyncN    int
+	jitterSum time.Duration
+	jitterN   int
 }
 
 // NewRunner builds a Runner. cfg.Bounds must have entries for CPU, Memory,
@@ -160,10 +171,10 @@ func (r *Runner) ObserveHeartbeat(now time.Time) {
 	if r.hbInterval <= 0 {
 		return
 	}
-	r.hbMu.Lock()
+	r.aggMu.Lock()
+	defer r.aggMu.Unlock()
 	last := r.hbLast
 	r.hbLast = now
-	r.hbMu.Unlock()
 	if last.IsZero() {
 		return
 	}
@@ -175,7 +186,8 @@ func (r *Runner) ObserveHeartbeat(now time.Time) {
 	if dev < 0 {
 		dev = -dev
 	}
-	r.scorer.Sample(raftstability.SignalJitter, dev.Seconds())
+	r.jitterSum += dev
+	r.jitterN++
 }
 
 // ObserveFsync feeds one WAL fsync latency sample into the fsync signal.
@@ -183,13 +195,32 @@ func (r *Runner) ObserveHeartbeat(now time.Time) {
 // call alongside its existing walFsyncSec.Observe (server/storage/wal/wal.go)
 // once T5.2 wires a Runner instance into etcd's startup path.
 func (r *Runner) ObserveFsync(d time.Duration) {
-	r.scorer.Sample(raftstability.SignalFsync, d.Seconds())
+	r.aggMu.Lock()
+	r.fsyncSum += d
+	r.fsyncN++
+	r.aggMu.Unlock()
 }
+
+// SampleNow closes one sampling period: it pulls CPU/memory samples and
+// feeds the period's mean fsync latency and mean heartbeat jitter (each only
+// if there were any) into the EWMA. Run calls it every Period; tests and
+// callers may call it directly.
+func (r *Runner) SampleNow() { r.sampleOnce() }
 
 // sampleOnce pulls one CPU/mem sample (skipping either signal whose sampler
 // is nil or errors) and logs the resulting composite score at debug level
 // (T5.1 accept criterion: "scorer value visible in etcd log at debug").
 func (r *Runner) sampleOnce() {
+	r.aggMu.Lock()
+	fsyncSum, fsyncN, jitterSum, jitterN := r.fsyncSum, r.fsyncN, r.jitterSum, r.jitterN
+	r.fsyncSum, r.fsyncN, r.jitterSum, r.jitterN = 0, 0, 0, 0
+	r.aggMu.Unlock()
+	if fsyncN > 0 {
+		r.scorer.Sample(raftstability.SignalFsync, (fsyncSum / time.Duration(fsyncN)).Seconds())
+	}
+	if jitterN > 0 {
+		r.scorer.Sample(raftstability.SignalJitter, (jitterSum / time.Duration(jitterN)).Seconds())
+	}
 	if r.cpu != nil {
 		if v, err := r.cpu.Sample(); err != nil {
 			// The first sample of a delta-based sampler has no history yet:
