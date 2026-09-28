@@ -609,7 +609,6 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 	rc.MinHeirTenure = tunables.MinHeirTenure
 	rc.HeirJitter = tunables.HeirJitter
 	rc.NonHeirBackoff = tunables.NonHeirBackoff
-	rc.HeirStaleness = tunables.HeirStaleness
 	rc.HandoverThreshold = tunables.HandoverThreshold
 	rc.DegradeWindow = tunables.DegradeWindow
 	rc.HandoverCooldown = tunables.HandoverCooldown

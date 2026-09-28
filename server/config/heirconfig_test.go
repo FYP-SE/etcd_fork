@@ -24,7 +24,7 @@ func TestParseHeirTunables_EmptyStringIsAllZero(t *testing.T) {
 
 func TestParseHeirTunables_AllKeysRecognised(t *testing.T) {
 	got, err := ParseHeirTunables("max-heir-lag=512,hysteresis-margin=30,min-heir-tenure=5," +
-		"heir-jitter=0.15,non-heir-backoff=2.0,heir-staleness=8," +
+		"heir-jitter=0.15,non-heir-backoff=2.0," +
 		"handover-threshold=180,degrade-window=4,handover-cooldown=3")
 	if err != nil {
 		t.Fatalf("ParseHeirTunables: %v", err)
@@ -35,7 +35,6 @@ func TestParseHeirTunables_AllKeysRecognised(t *testing.T) {
 		MinHeirTenure:     5,
 		HeirJitter:        0.15,
 		NonHeirBackoff:    2.0,
-		HeirStaleness:     8,
 		HandoverThreshold: 180,
 		DegradeWindow:     4,
 		HandoverCooldown:  3,
@@ -107,5 +106,14 @@ func TestParseHeirTunables_NegativeValueForUnsignedFieldErrors(t *testing.T) {
 func TestParseHeirTunables_DuplicateKeyErrors(t *testing.T) {
 	if _, err := ParseHeirTunables("max-heir-lag=1,max-heir-lag=2"); err == nil {
 		t.Fatal("expected error for duplicate key, got nil")
+	}
+}
+
+// heir-staleness was removed with raft's HeirStaleness (DESIGN_UPDATE.md D4:
+// followers keep the heir for the whole term). An old config naming it must
+// fail loudly, not silently run without the expiry it asked for.
+func TestParseHeirTunables_RejectsRemovedHeirStaleness(t *testing.T) {
+	if _, err := ParseHeirTunables("heir-staleness=4"); err == nil {
+		t.Fatal("ParseHeirTunables(heir-staleness=4) succeeded, want unrecognised-key error")
 	}
 }

@@ -17,7 +17,6 @@ type HeirTunables struct {
 	MinHeirTenure     int
 	HeirJitter        float64
 	NonHeirBackoff    float64
-	HeirStaleness     int
 	HandoverThreshold uint8
 	DegradeWindow     int
 	HandoverCooldown  int
@@ -77,12 +76,6 @@ func ParseHeirTunables(s string) (HeirTunables, error) {
 				return HeirTunables{}, err
 			}
 			t.NonHeirBackoff = v
-		case "heir-staleness":
-			v, err := parseInt(key, value)
-			if err != nil {
-				return HeirTunables{}, err
-			}
-			t.HeirStaleness = v
 		case "handover-threshold":
 			v, err := parseUint(key, value, 8)
 			if err != nil {
