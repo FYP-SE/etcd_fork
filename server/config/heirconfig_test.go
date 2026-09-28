@@ -23,14 +23,15 @@ func TestParseHeirTunables_EmptyStringIsAllZero(t *testing.T) {
 }
 
 func TestParseHeirTunables_AllKeysRecognised(t *testing.T) {
-	got, err := ParseHeirTunables("max-heir-lag=512,hysteresis-margin=30,min-heir-tenure=5," +
+	got, err := ParseHeirTunables("freshness-slack=2,heir-sync-grace=15,hysteresis-margin=30,min-heir-tenure=5," +
 		"heir-jitter=0.15,non-heir-backoff=2.0," +
 		"handover-threshold=180,degrade-window=4,handover-cooldown=3")
 	if err != nil {
 		t.Fatalf("ParseHeirTunables: %v", err)
 	}
 	want := HeirTunables{
-		MaxHeirLag:        512,
+		FreshnessSlack:    2,
+		HeirSyncGrace:     15,
 		HysteresisMargin:  30,
 		MinHeirTenure:     5,
 		HeirJitter:        0.15,
@@ -56,11 +57,11 @@ func TestParseHeirTunables_PartialSetLeavesRestZero(t *testing.T) {
 }
 
 func TestParseHeirTunables_IgnoresWhitespaceAroundPairs(t *testing.T) {
-	got, err := ParseHeirTunables(" max-heir-lag = 100 , min-heir-tenure = 3 ")
+	got, err := ParseHeirTunables(" freshness-slack = 3 , min-heir-tenure = 3 ")
 	if err != nil {
 		t.Fatalf("ParseHeirTunables: %v", err)
 	}
-	want := HeirTunables{MaxHeirLag: 100, MinHeirTenure: 3}
+	want := HeirTunables{FreshnessSlack: 3, MinHeirTenure: 3}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -73,7 +74,7 @@ func TestParseHeirTunables_UnknownKeyErrors(t *testing.T) {
 }
 
 func TestParseHeirTunables_MalformedPairErrors(t *testing.T) {
-	for _, in := range []string{"max-heir-lag", "max-heir-lag=", "=5", "max-heir-lag=5=6", ","} {
+	for _, in := range []string{"freshness-slack", "freshness-slack=", "=5", "freshness-slack=5=6", ","} {
 		if _, err := ParseHeirTunables(in); err == nil {
 			t.Fatalf("ParseHeirTunables(%q): expected error, got nil", in)
 		}
@@ -81,7 +82,7 @@ func TestParseHeirTunables_MalformedPairErrors(t *testing.T) {
 }
 
 func TestParseHeirTunables_NonNumericValueErrors(t *testing.T) {
-	if _, err := ParseHeirTunables("max-heir-lag=not-a-number"); err == nil {
+	if _, err := ParseHeirTunables("freshness-slack=not-a-number"); err == nil {
 		t.Fatal("expected error for non-numeric value, got nil")
 	}
 }
@@ -98,13 +99,13 @@ func TestParseHeirTunables_ValueOutOfRangeForTypeErrors(t *testing.T) {
 }
 
 func TestParseHeirTunables_NegativeValueForUnsignedFieldErrors(t *testing.T) {
-	if _, err := ParseHeirTunables("max-heir-lag=-1"); err == nil {
-		t.Fatal("expected error for negative value on a uint64 field, got nil")
+	if _, err := ParseHeirTunables("hysteresis-margin=-1"); err == nil {
+		t.Fatal("expected error for negative value on a uint8 field, got nil")
 	}
 }
 
 func TestParseHeirTunables_DuplicateKeyErrors(t *testing.T) {
-	if _, err := ParseHeirTunables("max-heir-lag=1,max-heir-lag=2"); err == nil {
+	if _, err := ParseHeirTunables("freshness-slack=1,freshness-slack=2"); err == nil {
 		t.Fatal("expected error for duplicate key, got nil")
 	}
 }
@@ -115,5 +116,33 @@ func TestParseHeirTunables_DuplicateKeyErrors(t *testing.T) {
 func TestParseHeirTunables_RejectsRemovedHeirStaleness(t *testing.T) {
 	if _, err := ParseHeirTunables("heir-staleness=4"); err == nil {
 		t.Fatal("ParseHeirTunables(heir-staleness=4) succeeded, want unrecognised-key error")
+	}
+}
+
+// freshness-slack=0 is a real setting (strict: match the freshest follower),
+// but raft.Config reads a zero FreshnessSlack as "default 1", so the parser
+// maps an explicit 0 to raft.FreshnessSlackStrict (-1). DESIGN_UPDATE.md D5.
+func TestParseHeirTunables_FreshnessSlackZeroIsStrict(t *testing.T) {
+	got, err := ParseHeirTunables("freshness-slack=0")
+	if err != nil {
+		t.Fatalf("ParseHeirTunables: %v", err)
+	}
+	if got.FreshnessSlack != -1 {
+		t.Fatalf("FreshnessSlack = %d, want -1 (raft.FreshnessSlackStrict)", got.FreshnessSlack)
+	}
+}
+
+func TestParseHeirTunables_NegativeSlackAndGraceRejected(t *testing.T) {
+	for _, in := range []string{"freshness-slack=-1", "heir-sync-grace=-1"} {
+		if _, err := ParseHeirTunables(in); err == nil {
+			t.Errorf("ParseHeirTunables(%q) succeeded, want error", in)
+		}
+	}
+}
+
+// max-heir-lag was removed with raft's MaxHeirLag (DESIGN_UPDATE.md D5).
+func TestParseHeirTunables_RejectsRemovedMaxHeirLag(t *testing.T) {
+	if _, err := ParseHeirTunables("max-heir-lag=256"); err == nil {
+		t.Fatal("ParseHeirTunables(max-heir-lag=256) succeeded, want unrecognised-key error")
 	}
 }

@@ -12,7 +12,8 @@ import (
 // so a partially-specified --experimental-heir-config only overrides what
 // the operator actually named.
 type HeirTunables struct {
-	MaxHeirLag        uint64
+	FreshnessSlack    int
+	HeirSyncGrace     int
 	HysteresisMargin  uint8
 	MinHeirTenure     int
 	HeirJitter        float64
@@ -46,12 +47,24 @@ func ParseHeirTunables(s string) (HeirTunables, error) {
 		seen[key] = true
 
 		switch key {
-		case "max-heir-lag":
-			v, err := parseUint(key, value, 64)
+		case "freshness-slack":
+			// DESIGN_UPDATE.md D5. raft.Config reads 0 as "default 1", so an
+			// explicit 0 (strict) maps to raft.FreshnessSlackStrict (-1).
+			v, err := parseNonNegInt(key, value)
 			if err != nil {
 				return HeirTunables{}, err
 			}
-			t.MaxHeirLag = v
+			if v == 0 {
+				v = -1
+			}
+			t.FreshnessSlack = v
+		case "heir-sync-grace":
+			// DESIGN_UPDATE.md D6, in ticks.
+			v, err := parseNonNegInt(key, value)
+			if err != nil {
+				return HeirTunables{}, err
+			}
+			t.HeirSyncGrace = v
 		case "hysteresis-margin":
 			v, err := parseUint(key, value, 8)
 			if err != nil {
@@ -118,6 +131,17 @@ func parseUint(key, value string, bitSize int) (uint64, error) {
 	v, err := strconv.ParseUint(value, 10, bitSize)
 	if err != nil {
 		return 0, fmt.Errorf("experimental-heir-config: %s=%q: %w", key, value, err)
+	}
+	return v, nil
+}
+
+func parseNonNegInt(key, value string) (int, error) {
+	v, err := parseInt(key, value)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("experimental-heir-config: %s=%q: must be >= 0", key, value)
 	}
 	return v, nil
 }

@@ -604,7 +604,8 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 	rc.HeirElection = cfg.ExperimentalHeirElection
 	rc.HeirLogPriority = cfg.ExperimentalHeirLogPriority
 	rc.GracefulHandover = cfg.ExperimentalGracefulHandover
-	rc.MaxHeirLag = tunables.MaxHeirLag
+	rc.FreshnessSlack = tunables.FreshnessSlack
+	rc.HeirSyncGrace = tunables.HeirSyncGrace
 	rc.HysteresisMargin = tunables.HysteresisMargin
 	rc.MinHeirTenure = tunables.MinHeirTenure
 	rc.HeirJitter = tunables.HeirJitter

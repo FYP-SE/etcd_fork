@@ -325,7 +325,7 @@ type Config struct {
 	// heir once the leader's own stability score degrades for long enough.
 	ExperimentalGracefulHandover bool `json:"experimental-graceful-handover"`
 	// ExperimentalHeirConfig overrides HeirRaft's tunables (DESIGN.md §5),
-	// e.g. "max-heir-lag=512,hysteresis-margin=30". Keys left unset keep
+	// e.g. "freshness-slack=1,heir-sync-grace=10". Keys left unset keep
 	// raft.Config's own defaults. See server/config.ParseHeirTunables for
 	// the full key list.
 	ExperimentalHeirConfig string `json:"experimental-heir-config"`
@@ -706,7 +706,7 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&cfg.ExperimentalHeirElection, "experimental-heir-election", cfg.ExperimentalHeirElection, "Enable HeirRaft heir-biased election timeouts (DESIGN.md §2.5). Off by default; byte-identical to stock when false.")
 	fs.BoolVar(&cfg.ExperimentalHeirLogPriority, "experimental-heir-log-priority", cfg.ExperimentalHeirLogPriority, "Enable HeirRaft heir-first log replication dispatch (DESIGN.md §2.7).")
 	fs.BoolVar(&cfg.ExperimentalGracefulHandover, "experimental-graceful-handover", cfg.ExperimentalGracefulHandover, "Enable HeirRaft proactive leadership transfer to the heir on leader score degradation (DESIGN.md §2.6).")
-	fs.StringVar(&cfg.ExperimentalHeirConfig, "experimental-heir-config", cfg.ExperimentalHeirConfig, "Comma-separated key=value overrides for HeirRaft tunables (DESIGN.md §5), e.g. max-heir-lag=512,hysteresis-margin=30. Unset keys keep raft.Config's own defaults.")
+	fs.StringVar(&cfg.ExperimentalHeirConfig, "experimental-heir-config", cfg.ExperimentalHeirConfig, "Comma-separated key=value overrides for HeirRaft tunables (DESIGN.md §5), e.g. freshness-slack=1,heir-sync-grace=10. Unset keys keep raft.Config's own defaults.")
 
 	// security
 	fs.StringVar(&cfg.ClientTLSInfo.CertFile, "cert-file", "", "Path to the client server TLS cert file.")

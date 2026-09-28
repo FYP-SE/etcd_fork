@@ -174,7 +174,7 @@ Clustering:
   --experimental-graceful-handover 'false'
     Enable HeirRaft proactive leadership transfer to the heir on leader score degradation.
   --experimental-heir-config ''
-    Comma-separated key=value overrides for HeirRaft tunables, e.g. max-heir-lag=512,hysteresis-margin=30. Unset keys keep raft.Config's own defaults.
+    Comma-separated key=value overrides for HeirRaft tunables, e.g. freshness-slack=1,heir-sync-grace=10. Unset keys keep raft.Config's own defaults.
   --auto-compaction-retention '0'
     Auto compaction retention length. 0 means disable auto compaction.
   --auto-compaction-mode 'periodic'
