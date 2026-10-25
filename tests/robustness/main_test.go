@@ -105,6 +105,24 @@ func TestRobustnessHeirRaft(t *testing.T) {
 	}
 }
 
+// TestRobustnessHeirRaftNetwork runs the robustness checks under peer
+// message drop, delay and blackhole, for stock and HeirRaft
+// (see scenarios.HeirRaftNetworkFaults).
+func TestRobustnessHeirRaftNetwork(t *testing.T) {
+	testRunner.BeforeTest(t)
+	for _, s := range scenarios.HeirRaftNetworkFaults(t) {
+		t.Run(s.Name, func(t *testing.T) {
+			lg := zaptest.NewLogger(t)
+			s.Cluster.Logger = lg
+			ctx := t.Context()
+			c, err := e2e.NewEtcdProcessCluster(ctx, t, e2e.WithConfig(&s.Cluster))
+			require.NoError(t, err)
+			defer forcestopCluster(c)
+			testRobustness(ctx, t, lg, s, c)
+		})
+	}
+}
+
 func testRobustness(ctx context.Context, t *testing.T, lg *zap.Logger, s scenarios.TestScenario, c *e2e.EtcdProcessCluster) {
 	r, err := report.NewTestReport(lg, testResultsDirectory(t), report.ServerDataPaths(c), &report.TrafficDetail{ExpectUniqueRevision: s.Traffic.ExpectUniqueRevision()})
 	require.NoError(t, err)

@@ -62,3 +62,45 @@ func HeirRaftFailover(_ *testing.T) []TestScenario {
 		},
 	}
 }
+
+// HeirRaftNetworkFaults checks linearizability and watch ordering when peer
+// messages are dropped, delayed or blackholed, for both stock and HeirRaft.
+// The faults are injected by the e2e peer proxy, which sits above TCP: a
+// dropped chunk is lost from the byte stream and is not retransmitted by
+// TCP, so any recovery has to come from rafthttp reconnecting and Raft's
+// own log-index matching and leader retransmission. Peer TLS is required by
+// the e2e framework with the proxy: a dropped chunk then fails the TLS
+// record check and the connection is reset, instead of being parsed as a
+// malformed message.
+func HeirRaftNetworkFaults(_ *testing.T) []TestScenario {
+	failpoints := []failpoint.Failpoint{
+		failpoint.DropPeerNetwork,
+		failpoint.DelayPeerNetwork,
+		failpoint.BlackholePeerNetwork,
+	}
+	arms := []struct {
+		name string
+		opts []e2e.EPClusterOption
+	}{
+		{"Stock", nil},
+		{"HeirRaft", []e2e.EPClusterOption{withHeirRaftEnabled}},
+	}
+	var out []TestScenario
+	for _, arm := range arms {
+		for _, fp := range failpoints {
+			opts := append([]e2e.EPClusterOption{e2e.WithClusterSize(3), e2e.WithIsPeerTLS(true), e2e.WithPeerProxy(true)}, arm.opts...)
+			out = append(out, TestScenario{
+				Name:      arm.name + "/" + fp.Name(),
+				Failpoint: fp,
+				Traffic:   traffic.EtcdPut,
+				Profile: traffic.Profile{
+					KeyValue:   &traffic.KeyValueHigh,
+					Watch:      &traffic.WatchDefault,
+					Compaction: &traffic.CompactionDefault,
+				},
+				Cluster: *e2e.NewConfig(opts...),
+			})
+		}
+	}
+	return out
+}
