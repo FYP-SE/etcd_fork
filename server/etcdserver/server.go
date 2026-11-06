@@ -60,9 +60,9 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3compactor"
 	"go.etcd.io/etcd/server/v3/etcdserver/apply"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
-	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	"go.etcd.io/etcd/server/v3/etcdserver/errors"
 	"go.etcd.io/etcd/server/v3/etcdserver/read"
+	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	serverversion "go.etcd.io/etcd/server/v3/etcdserver/version"
 	"go.etcd.io/etcd/server/v3/features"
 	"go.etcd.io/etcd/server/v3/lease"
@@ -427,6 +427,8 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		ServerStats: sstats,
 		LeaderStats: lstats,
 		ErrorC:      srv.errorc,
+
+		UDPListenAddr: udpListenAddr(cfg),
 	}
 	if err = tr.Start(); err != nil {
 		return nil, err
@@ -473,12 +475,12 @@ func (s *EtcdServer) adjustTicks() {
 
 	// single-node fresh start, or single-node recovers from snapshot
 	if clusterN == 1 {
-		ticks := s.Cfg.ElectionTicks - 1
+		ticks := forwardTicks(s.Cfg, 1)
 		lg.Info(
 			"started as single-node; fast-forwarding election ticks",
 			zap.String("local-member-id", s.MemberID().String()),
 			zap.Int("forward-ticks", ticks),
-			zap.String("forward-duration", tickToDur(ticks, s.Cfg.TickMs)),
+			zap.String("forward-duration", ticksToDuration(s.Cfg, ticks).String()),
 			zap.Int("election-ticks", s.Cfg.ElectionTicks),
 			zap.String("election-timeout", tickToDur(s.Cfg.ElectionTicks, s.Cfg.TickMs)),
 		)
@@ -511,13 +513,13 @@ func (s *EtcdServer) adjustTicks() {
 		if peerN > 1 {
 			// multi-node received peer connection reports
 			// adjust ticks, in case slow leader message receive
-			ticks := s.Cfg.ElectionTicks - 2
+			ticks := forwardTicks(s.Cfg, 2)
 
 			lg.Info(
 				"initialized peer connections; fast-forwarding election ticks",
 				zap.String("local-member-id", s.MemberID().String()),
 				zap.Int("forward-ticks", ticks),
-				zap.String("forward-duration", tickToDur(ticks, s.Cfg.TickMs)),
+				zap.String("forward-duration", ticksToDuration(s.Cfg, ticks).String()),
 				zap.Int("election-ticks", s.Cfg.ElectionTicks),
 				zap.String("election-timeout", tickToDur(s.Cfg.ElectionTicks, s.Cfg.TickMs)),
 				zap.Int("active-remote-members", peerN),

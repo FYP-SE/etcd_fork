@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -334,6 +335,27 @@ type Config struct {
 	// raft.Config's own defaults. See server/config.ParseHeirTunables for
 	// the full key list.
 	ExperimentalHeirConfig string `json:"experimental-heir-config"`
+
+	// ExperimentalDynatune enables Dynatune: election timeout and heartbeat
+	// interval tuned from measured RTT and packet loss (Shiozaki, IPDPSW
+	// 2025). Master switch for the tunables below; off by default, and then
+	// behaviour is byte-identical to stock. When on, raft is ticked every
+	// millisecond and heartbeats travel over UDP (--listen-peer-udp-url).
+	// Cannot be combined with the HeirRaft flags.
+	ExperimentalDynatune bool `json:"experimental-dynatune"`
+	// The tunables keep the reference implementation's flag names so the
+	// reference and this port take the same flag list. Zero means "raft's
+	// default"; setting any of them without ExperimentalDynatune is an error.
+	MaxElectionMetricsCapacity int     `json:"max-election-metrics-capacity"`
+	MinElectionMetricsCapacity int     `json:"min-election-metrics-capacity"`
+	ElectionSafetyFactor       int     `json:"election-safety-factor"`
+	HeartbeatReachabilityGoal  float64 `json:"heartbeat-reachability-goal"`
+	HeartbeatK                 int64   `json:"heartbeat-k"`
+	OptimizeHeartbeatInterval  bool    `json:"optimize-heartbeat-interval"`
+	// ListenPeerUdpUrl is the "host:port" the UDP heartbeat listener binds to
+	// (default 0.0.0.0:2381 when Dynatune is on). Every member must use the
+	// same port: it is also where this member sends its UDP heartbeats.
+	ListenPeerUdpUrl string `json:"listen-peer-udp-url"`
 
 	CORS map[string]struct{}
 
@@ -714,6 +736,15 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&cfg.ExperimentalGracefulHandover, "experimental-graceful-handover", cfg.ExperimentalGracefulHandover, "Enable HeirRaft proactive leadership transfer to the heir on leader score degradation (DESIGN.md §2.6).")
 	fs.StringVar(&cfg.ExperimentalHeirConfig, "experimental-heir-config", cfg.ExperimentalHeirConfig, "Comma-separated key=value overrides for HeirRaft tunables (DESIGN.md §5), e.g. freshness-slack=1,heir-sync-grace=10. Unset keys keep raft.Config's own defaults.")
 
+	fs.BoolVar(&cfg.ExperimentalDynatune, "experimental-dynatune", cfg.ExperimentalDynatune, "Enable Dynatune: election timeout and heartbeat interval tuned from measured RTT and packet loss. Raft is then ticked every millisecond and heartbeats travel over UDP. Off by default; byte-identical to stock when false. Cannot be combined with the --experimental-heir-* flags.")
+	fs.IntVar(&cfg.MaxElectionMetricsCapacity, "max-election-metrics-capacity", cfg.MaxElectionMetricsCapacity, "Dynatune: maximum size of the sliding window of RTT/sequence samples (0 = raft default). Requires --experimental-dynatune.")
+	fs.IntVar(&cfg.MinElectionMetricsCapacity, "min-election-metrics-capacity", cfg.MinElectionMetricsCapacity, "Dynatune: tuning starts once the window holds more than this many samples (0 = raft default). Requires --experimental-dynatune.")
+	fs.IntVar(&cfg.ElectionSafetyFactor, "election-safety-factor", cfg.ElectionSafetyFactor, "Dynatune: multiplier of the RTT standard deviation in the election timeout (0 = raft default). Requires --experimental-dynatune.")
+	fs.Float64Var(&cfg.HeartbeatReachabilityGoal, "heartbeat-reachability-goal", cfg.HeartbeatReachabilityGoal, "Dynatune: probability, in (0,1), that at least one heartbeat arrives per election window (0 = raft default). Used with --optimize-heartbeat-interval. Requires --experimental-dynatune.")
+	fs.Int64Var(&cfg.HeartbeatK, "heartbeat-k", cfg.HeartbeatK, "Dynatune: fixed heartbeat:election ratio (interval = timeout/(K+1)) used when --optimize-heartbeat-interval is off (0 = raft default). Requires --experimental-dynatune.")
+	fs.BoolVar(&cfg.OptimizeHeartbeatInterval, "optimize-heartbeat-interval", cfg.OptimizeHeartbeatInterval, "Dynatune: derive the requested heartbeat interval from the measured packet loss instead of the fixed ratio K. Requires --experimental-dynatune.")
+	fs.StringVar(&cfg.ListenPeerUdpUrl, "listen-peer-udp-url", cfg.ListenPeerUdpUrl, "Dynatune: host:port to listen on for UDP heartbeats (default 0.0.0.0:2381). All members must use the same port. Requires --experimental-dynatune.")
+
 	// security
 	fs.StringVar(&cfg.ClientTLSInfo.CertFile, "cert-file", "", "Path to the client server TLS cert file.")
 	fs.StringVar(&cfg.ClientTLSInfo.KeyFile, "key-file", "", "Path to the client server TLS key file.")
@@ -1067,6 +1098,10 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("--compact-hash-check-time must be >0 (set to %v)", cfg.CompactHashCheckTime)
 	}
 
+	if err := cfg.validateDynatune(); err != nil {
+		return err
+	}
+
 	// If `--name` isn't configured, then multiple members may have the same "default" name.
 	// When adding a new member with the "default" name as well, etcd may regards its peerURL
 	// as one additional peerURL of the existing member which has the same "default" name,
@@ -1098,6 +1133,83 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("cipher suites cannot be configured when only TLS1.3 is enabled")
 	}
 
+	return nil
+}
+
+// validateDynatune checks the Dynatune flags. Without --experimental-dynatune
+// every other Dynatune flag must be unset: a tunable that is silently ignored
+// would leave the operator believing Dynatune is running while the member runs
+// stock etcd. With it, HeirRaft flags are refused (the combined arm is out of
+// scope: HeirRaft piggybacks fields on heartbeats, which Dynatune sends over
+// UDP) and each value is range-checked; the goal is only checked when it is
+// used (--optimize-heartbeat-interval) and K only when it is used (otherwise).
+func (cfg *Config) validateDynatune() error {
+	const master = "--experimental-dynatune"
+	if !cfg.ExperimentalDynatune {
+		for _, f := range []struct {
+			name string
+			set  bool
+		}{
+			{"max-election-metrics-capacity", cfg.MaxElectionMetricsCapacity != 0},
+			{"min-election-metrics-capacity", cfg.MinElectionMetricsCapacity != 0},
+			{"election-safety-factor", cfg.ElectionSafetyFactor != 0},
+			{"heartbeat-reachability-goal", cfg.HeartbeatReachabilityGoal != 0},
+			{"heartbeat-k", cfg.HeartbeatK != 0},
+			{"optimize-heartbeat-interval", cfg.OptimizeHeartbeatInterval},
+			{"listen-peer-udp-url", cfg.ListenPeerUdpUrl != ""},
+		} {
+			if f.set {
+				return fmt.Errorf("--%s requires %s", f.name, master)
+			}
+		}
+		return nil
+	}
+
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{
+		{"experimental-heir-election", cfg.ExperimentalHeirElection},
+		{"experimental-heir-log-priority", cfg.ExperimentalHeirLogPriority},
+		{"experimental-heir-lease", cfg.ExperimentalHeirLease},
+		{"experimental-graceful-handover", cfg.ExperimentalGracefulHandover},
+		{"experimental-heir-config", cfg.ExperimentalHeirConfig != ""},
+	} {
+		if f.set {
+			return fmt.Errorf("--%s cannot be combined with %s", f.name, master)
+		}
+	}
+
+	if cfg.MaxElectionMetricsCapacity < 0 {
+		return fmt.Errorf("--max-election-metrics-capacity must not be negative (set to %d)", cfg.MaxElectionMetricsCapacity)
+	}
+	if cfg.MinElectionMetricsCapacity < 0 {
+		return fmt.Errorf("--min-election-metrics-capacity must not be negative (set to %d)", cfg.MinElectionMetricsCapacity)
+	}
+	if cfg.MaxElectionMetricsCapacity != 0 && cfg.MinElectionMetricsCapacity >= cfg.MaxElectionMetricsCapacity {
+		return fmt.Errorf("--min-election-metrics-capacity[%d] must be less than --max-election-metrics-capacity[%d]",
+			cfg.MinElectionMetricsCapacity, cfg.MaxElectionMetricsCapacity)
+	}
+	if cfg.ElectionSafetyFactor < 0 {
+		return fmt.Errorf("--election-safety-factor must not be negative (set to %d)", cfg.ElectionSafetyFactor)
+	}
+	if cfg.OptimizeHeartbeatInterval {
+		g := cfg.HeartbeatReachabilityGoal
+		if g != 0 && (math.IsNaN(g) || g <= 0 || g >= 1) {
+			return fmt.Errorf("--heartbeat-reachability-goal must be in (0,1) (set to %v)", g)
+		}
+	} else if cfg.HeartbeatK < 0 {
+		return fmt.Errorf("--heartbeat-k must not be negative (set to %d)", cfg.HeartbeatK)
+	}
+	if cfg.ListenPeerUdpUrl != "" {
+		_, port, err := net.SplitHostPort(cfg.ListenPeerUdpUrl)
+		if err != nil {
+			return fmt.Errorf(`--listen-peer-udp-url %q must be "host:port" (%w)`, cfg.ListenPeerUdpUrl, err)
+		}
+		if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("--listen-peer-udp-url %q has an invalid port", cfg.ListenPeerUdpUrl)
+		}
+	}
 	return nil
 }
 

@@ -40,8 +40,8 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
-	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	servererrors "go.etcd.io/etcd/server/v3/etcdserver/errors"
+	"go.etcd.io/etcd/server/v3/etcdserver/stability"
 	serverstorage "go.etcd.io/etcd/server/v3/storage"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
@@ -191,6 +191,9 @@ type bootstrappedCluster struct {
 type bootstrappedRaft struct {
 	lg        *zap.Logger
 	heartbeat time.Duration
+	// tickInterval/dynatune: see raftNodeConfig and dynatune_ticks.go.
+	tickInterval time.Duration
+	dynatune     bool
 
 	peers   []raft.Peer
 	config  *raft.Config
@@ -528,12 +531,14 @@ func bootstrapRaftFromCluster(cfg config.ServerConfig, cl *membership.RaftCluste
 	rc, runner := raftConfig(cfg, uint64(member.ID), s)
 	wireHeirRunnerFsyncHook(bwal, runner)
 	return &bootstrappedRaft{
-		lg:         cfg.Logger,
-		heartbeat:  time.Duration(cfg.TickMs) * time.Millisecond,
-		config:     rc,
-		heirRunner: runner,
-		peers:      peers,
-		storage:    s,
+		lg:           cfg.Logger,
+		heartbeat:    time.Duration(cfg.TickMs) * time.Millisecond,
+		tickInterval: raftTickInterval(cfg),
+		dynatune:     cfg.ExperimentalDynatune,
+		config:       rc,
+		heirRunner:   runner,
+		peers:        peers,
+		storage:      s,
 	}
 }
 
@@ -542,11 +547,13 @@ func bootstrapRaftFromWAL(cfg config.ServerConfig, bwal *bootstrappedWAL) *boots
 	rc, runner := raftConfig(cfg, uint64(bwal.meta.nodeID), s)
 	wireHeirRunnerFsyncHook(bwal, runner)
 	return &bootstrappedRaft{
-		lg:         cfg.Logger,
-		heartbeat:  time.Duration(cfg.TickMs) * time.Millisecond,
-		config:     rc,
-		heirRunner: runner,
-		storage:    s,
+		lg:           cfg.Logger,
+		heartbeat:    time.Duration(cfg.TickMs) * time.Millisecond,
+		tickInterval: raftTickInterval(cfg),
+		dynatune:     cfg.ExperimentalDynatune,
+		config:       rc,
+		heirRunner:   runner,
+		storage:      s,
 	}
 }
 
@@ -579,6 +586,28 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 		CheckQuorum:     true,
 		PreVote:         cfg.PreVote,
 		Logger:          NewRaftLoggerZap(cfg.Logger.Named("raft")),
+	}
+
+	if cfg.ExperimentalDynatune {
+		// Defence in depth: embed.Config.Validate already refuses this.
+		if cfg.ExperimentalHeirElection || cfg.ExperimentalHeirLogPriority || cfg.ExperimentalHeirLease ||
+			cfg.ExperimentalGracefulHandover || cfg.ExperimentalHeirConfig != "" {
+			cfg.Logger.Panic("--experimental-dynatune cannot be combined with the --experimental-heir-*/graceful flags")
+		}
+		// Raft is ticked once per millisecond in this mode, so its tick-counted
+		// timeouts are in milliseconds. ServerConfig.TickMs/ElectionTicks stay
+		// as they are: leases, ReadIndex and RPC timeouts derive from them and
+		// must remain wall-clock durations.
+		rc.Dynatune = true
+		rc.HeartbeatTick = int(cfg.TickMs)
+		rc.ElectionTick = cfg.ElectionTicks * int(cfg.TickMs)
+		rc.MaxElectionMetricsCapacity = cfg.MaxElectionMetricsCapacity
+		rc.MinElectionMetricsCapacity = cfg.MinElectionMetricsCapacity
+		rc.ElectionSafetyFactor = cfg.ElectionSafetyFactor
+		rc.HeartbeatReachabilityGoal = cfg.HeartbeatReachabilityGoal
+		rc.K = cfg.HeartbeatK
+		rc.OptimizeHeartbeatInterval = cfg.OptimizeHeartbeatInterval
+		return rc, nil
 	}
 
 	if !cfg.ExperimentalHeirElection && !cfg.ExperimentalHeirLogPriority && !cfg.ExperimentalGracefulHandover {
@@ -633,12 +662,14 @@ func (b *bootstrappedRaft) newRaftNode(ss *snap.Snapshotter, wal *wal.WAL, cl *m
 	raftStatusMu.Unlock()
 	return newRaftNode(
 		raftNodeConfig{
-			lg:          b.lg,
-			isIDRemoved: func(id uint64) bool { return cl.IsIDRemoved(types.ID(id)) },
-			Node:        n,
-			heartbeat:   b.heartbeat,
-			raftStorage: b.storage,
-			storage:     serverstorage.NewStorage(b.lg, wal, ss),
+			lg:           b.lg,
+			isIDRemoved:  func(id uint64) bool { return cl.IsIDRemoved(types.ID(id)) },
+			Node:         n,
+			heartbeat:    b.heartbeat,
+			tickInterval: b.tickInterval,
+			dynatune:     b.dynatune,
+			raftStorage:  b.storage,
+			storage:      serverstorage.NewStorage(b.lg, wal, ss),
 		},
 	)
 }

@@ -177,6 +177,22 @@ Clustering:
     Enable HeirRaft proactive leadership transfer to the heir on leader score degradation.
   --experimental-heir-config ''
     Comma-separated key=value overrides for HeirRaft tunables, e.g. freshness-slack=1,heir-sync-grace=10. Unset keys keep raft.Config's own defaults.
+  --experimental-dynatune 'false'
+    Enable Dynatune: election timeout and heartbeat interval tuned from measured RTT and packet loss. Raft is then ticked every millisecond and heartbeats travel over UDP. Off by default; byte-identical to stock when false. Cannot be combined with the --experimental-heir-* flags.
+  --max-election-metrics-capacity '0'
+    Dynatune: maximum size of the sliding window of RTT/sequence samples (0 = raft default). Requires --experimental-dynatune.
+  --min-election-metrics-capacity '0'
+    Dynatune: tuning starts once the window holds more than this many samples (0 = raft default). Requires --experimental-dynatune.
+  --election-safety-factor '0'
+    Dynatune: multiplier of the RTT standard deviation in the election timeout (0 = raft default). Requires --experimental-dynatune.
+  --heartbeat-reachability-goal '0'
+    Dynatune: probability, in (0,1), that at least one heartbeat arrives per election window (0 = raft default). Used with --optimize-heartbeat-interval. Requires --experimental-dynatune.
+  --heartbeat-k '0'
+    Dynatune: fixed heartbeat:election ratio (interval = timeout/(K+1)) used when --optimize-heartbeat-interval is off (0 = raft default). Requires --experimental-dynatune.
+  --optimize-heartbeat-interval 'false'
+    Dynatune: derive the requested heartbeat interval from the measured packet loss instead of the fixed ratio K. Requires --experimental-dynatune.
+  --listen-peer-udp-url ''
+    Dynatune: host:port to listen on for UDP heartbeats (default 0.0.0.0:2381). All members must use the same port. Requires --experimental-dynatune.
   --auto-compaction-retention '0'
     Auto compaction retention length. 0 means disable auto compaction.
   --auto-compaction-mode 'periodic'

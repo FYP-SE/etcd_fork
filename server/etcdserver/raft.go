@@ -113,6 +113,14 @@ type raftNodeConfig struct {
 	raftStorage *raft.MemoryStorage
 	storage     serverstorage.Storage
 	heartbeat   time.Duration // for logging
+	// tickInterval is the wall-clock time between raft ticks. Zero means
+	// heartbeat (stock: one tick per --heartbeat-interval); Dynatune sets it
+	// to 1 ms (see dynatune_ticks.go).
+	tickInterval time.Duration
+	// dynatune is true under --experimental-dynatune: every follower has its
+	// own heartbeat interval, so the fixed-period heartbeat contention
+	// detector does not apply and is not created.
+	dynatune bool
 	// transport specifies the transport to send and receive msgs to members.
 	// Sending messages MUST NOT block. It is okay to drop messages, since
 	// clients should timeout and reissue their messages.
@@ -138,21 +146,35 @@ func newRaftNode(cfg raftNodeConfig) *raftNode {
 		tickMu:         new(sync.RWMutex),
 		raftNodeConfig: cfg,
 		latestTickTs:   time.Now(),
+		readStateC:     make(chan raft.ReadState, 1),
+		msgSnapC:       make(chan *raftpb.Message, maxInFlightMsgSnap),
+		applyc:         make(chan toApply),
+		stopped:        make(chan struct{}),
+		done:           make(chan struct{}),
+	}
+	if !cfg.dynatune {
 		// set up contention detectors for raft heartbeat message.
 		// expect to send a heartbeat within 2 heartbeat intervals.
-		td:         contention.NewTimeoutDetector(2 * cfg.heartbeat),
-		readStateC: make(chan raft.ReadState, 1),
-		msgSnapC:   make(chan *raftpb.Message, maxInFlightMsgSnap),
-		applyc:     make(chan toApply),
-		stopped:    make(chan struct{}),
-		done:       make(chan struct{}),
+		r.td = contention.NewTimeoutDetector(2 * cfg.heartbeat)
 	}
-	if r.heartbeat == 0 {
+	tick := r.tickInterval
+	if tick == 0 {
+		tick = r.heartbeat
+	}
+	if tick == 0 {
 		r.ticker = &time.Ticker{}
 	} else {
-		r.ticker = time.NewTicker(r.heartbeat)
+		r.ticker = time.NewTicker(tick)
 	}
 	return r
+}
+
+// resetHeartbeatDetector restarts the heartbeat contention detector, which
+// does not exist under Dynatune (see raftNodeConfig.dynatune).
+func (r *raftNode) resetHeartbeatDetector() {
+	if r.td != nil {
+		r.td.Reset()
+	}
 }
 
 // raft.Node does not have locks in Raft package
@@ -203,7 +225,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 						isLeader.Set(0)
 					}
 					rh.updateLeadership(newLeader)
-					r.td.Reset()
+					r.resetHeartbeatDetector()
 				}
 
 				if len(rd.ReadStates) != 0 {
@@ -382,7 +404,7 @@ func (r *raftNode) processMessages(ms []*raftpb.Message) []*raftpb.Message {
 			}
 			continue
 		}
-		if m.GetType() == raftpb.MsgHeartbeat {
+		if m.GetType() == raftpb.MsgHeartbeat && r.td != nil {
 			ok, exceed := r.td.Observe(m.GetTo())
 			if !ok {
 				// TODO: limit request rate.

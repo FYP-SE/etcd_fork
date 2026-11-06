@@ -172,6 +172,32 @@ type ServerConfig struct {
 	// to raft.Config.validate()'s own DESIGN.md §5 defaults.
 	ExperimentalHeirConfig string
 
+	// ExperimentalDynatune enables Dynatune (Shiozaki, IPDPSW 2025): election
+	// timeout and heartbeat interval tuned from measured RTT and packet loss.
+	// It is the master switch for the fields below; with it false (the
+	// default) the server is byte-identical to stock. When true raft is ticked
+	// once per millisecond (raftConfig expresses ElectionTick/HeartbeatTick in
+	// ms) and heartbeats travel over UDP. Cannot be combined with the HeirRaft
+	// flags above.
+	ExperimentalDynatune bool
+	// MaxElectionMetricsCapacity / MinElectionMetricsCapacity bound the sliding
+	// window of RTT/sequence samples (tuning starts above the minimum);
+	// ElectionSafetyFactor multiplies the RTT standard deviation;
+	// HeartbeatReachabilityGoal is the probability that at least one heartbeat
+	// arrives per election window; HeartbeatK is the fixed heartbeat:election
+	// ratio used when OptimizeHeartbeatInterval is false. Zero values mean
+	// "let raft pick its default".
+	MaxElectionMetricsCapacity int
+	MinElectionMetricsCapacity int
+	ElectionSafetyFactor       int
+	HeartbeatReachabilityGoal  float64
+	HeartbeatK                 int64
+	OptimizeHeartbeatInterval  bool
+	// ListenPeerUDPAddr is the "host:port" the UDP heartbeat listener binds
+	// to; empty means the default 0.0.0.0:2381. Its port is also the port used
+	// to reach every other member's UDP listener.
+	ListenPeerUDPAddr string
+
 	// SocketOpts are socket options passed to listener config.
 	SocketOpts transport.SocketOpts
 

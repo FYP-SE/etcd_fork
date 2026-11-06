@@ -129,6 +129,14 @@ type Transport struct {
 
 	pipelineProber probing.Prober
 	streamProber   probing.Prober
+
+	// UDPListenAddr, if not empty, is the "host:port" on which the transport
+	// listens for UDP heartbeats (Dynatune, see udp.go). Empty (the default)
+	// means no UDP at all: every message goes over the TCP peer path as in
+	// stock etcd. The port is also the one used to reach every peer's UDP
+	// listener.
+	UDPListenAddr string
+	udp           *udpHeartbeat
 }
 
 func (t *Transport) Start() error {
@@ -152,7 +160,7 @@ func (t *Transport) Start() error {
 	if t.DialRetryFrequency == 0 {
 		t.DialRetryFrequency = rate.Every(100 * time.Millisecond)
 	}
-	return nil
+	return t.startUDPHeartbeat()
 }
 
 func (t *Transport) Handler() http.Handler {
@@ -190,6 +198,9 @@ func (t *Transport) Send(msgs []*raftpb.Message) {
 			if isMsgApp(m) {
 				t.ServerStats.SendAppendReq(proto.Size(m))
 			}
+			if t.udp != nil && isUDPHeartbeat(m) && t.udp.send(to, m) {
+				continue
+			}
 			p.send(m)
 			continue
 		}
@@ -210,6 +221,9 @@ func (t *Transport) Send(msgs []*raftpb.Message) {
 }
 
 func (t *Transport) Stop() {
+	// Before taking t.mu: stopping the UDP read loop waits for it, and it
+	// takes t.mu to validate senders.
+	t.stopUDPHeartbeat()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, r := range t.remotes {
@@ -239,6 +253,7 @@ func (t *Transport) CutPeer(id types.ID) {
 
 	if pok {
 		p.(Pausable).Pause()
+		t.udp.cut(id)
 	}
 	if gok {
 		g.Pause()
@@ -254,6 +269,7 @@ func (t *Transport) MendPeer(id types.ID) {
 
 	if pok {
 		p.(Pausable).Resume()
+		t.udp.mend(id)
 	}
 	if gok {
 		g.Resume()
@@ -311,6 +327,7 @@ func (t *Transport) AddPeer(id types.ID, us []string) {
 	}
 	fs := t.LeaderStats.Follower(id.String())
 	t.peers[id] = startPeer(t, urls, id, fs)
+	t.udp.setPeerURLs(id, urls)
 	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec)
 	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec)
 
@@ -344,6 +361,7 @@ func (t *Transport) removePeer(id types.ID) {
 	peer, ok := t.peers[id]
 	if ok {
 		peer.stop()
+		t.udp.removePeer(id)
 		delete(t.peers, id)
 		delete(t.LeaderStats.Followers, id.String())
 		t.pipelineProber.Remove(id.String())
@@ -381,6 +399,7 @@ func (t *Transport) UpdatePeer(id types.ID, us []string) {
 		}
 	}
 	t.peers[id].update(urls)
+	t.udp.setPeerURLs(id, urls)
 
 	t.pipelineProber.Remove(id.String())
 	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec)

@@ -203,3 +203,28 @@ etcd [emeritus maintainers](OWNERS) dedicated a part of their career to etcd and
 ### License
 
 etcd is under the Apache 2.0 license. See the [LICENSE](LICENSE) file for details.
+
+<!-- DYNATUNE-README-MARKER -->
+# Experimental research flags in this fork
+
+This fork carries two mutually exclusive, **off-by-default** research features for the HeirRaft project.
+With every flag below unset the server is byte-identical to stock etcd.
+
+| Feature | Flags |
+|---|---|
+| HeirRaft (stability-aware successor designation) | `--experimental-heir-election`, `--experimental-heir-log-priority`, `--experimental-heir-lease`, `--experimental-graceful-handover`, `--experimental-heir-config` |
+| Dynatune (election timeout / heartbeat interval tuned from measured RTT and loss) | `--experimental-dynatune` plus `--max-election-metrics-capacity`, `--min-election-metrics-capacity`, `--election-safety-factor`, `--heartbeat-reachability-goal`, `--heartbeat-k`, `--optimize-heartbeat-interval`, `--listen-peer-udp-url` |
+
+**Dynatune details.** `--experimental-dynatune` is the master switch: setting any other Dynatune flag
+without it is an error, and combining it with a HeirRaft flag is rejected. When on:
+raft is ticked every **1 ms** (`raft.Config.HeartbeatTick = --heartbeat-interval`,
+`ElectionTick = --election-timeout`, both in ms; leases/ReadIndex/RPC timeouts keep wall-clock meaning);
+the startup tick fast-forward covers the same wall-clock time; the fixed-period heartbeat contention
+warning is disabled (each follower has its own interval); and **heartbeats and their responses travel
+over UDP** (`--listen-peer-udp-url`, default `0.0.0.0:2381`, same port on every member) - everything else
+stays on TCP. UDP heartbeats are **not TLS-protected or authenticated**; a heartbeat that cannot go by
+UDP (no peer host, socket error, too big) falls back to TCP. Zero tunable values mean "raft's default".
+Code: `server/embed/config.go` (flags, validation), `server/etcdserver/{bootstrap.go,raft.go,dynatune_ticks.go}`,
+`server/etcdserver/api/rafthttp/udp.go`. Needs the `raft_fork` Dynatune branch via `go.work`
+(`go.etcd.io/raft/v3 => ../raft_fork`). Tests: `go test ./server/embed ./server/etcdserver/...`.
+Build with `bash scripts/build.sh` (not `make build`; see the experiments repo's ENVIRONMENT.md).
