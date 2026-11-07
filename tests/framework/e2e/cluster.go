@@ -577,6 +577,14 @@ func (cfg *EtcdProcessClusterConfig) EtcdServerProcessConfig(tb testing.TB, i in
 		"--data-dir=" + dataDirPath,
 		"--snapshot-count=" + fmt.Sprintf("%d", cfg.ServerConfig.SnapshotCount),
 	}
+	if cfg.ServerConfig.ExperimentalDynatune {
+		// All members run on this host, so each needs its own UDP port for
+		// Dynatune's heartbeats: its peer port + 1 (a UDP port, so it cannot clash
+		// with the TCP metrics port). Peers find each other by the same offset,
+		// see peerUDPPort in server/etcdserver/api/rafthttp/udp.go. No host, so
+		// the socket accepts both IPv4 and IPv6 whatever "localhost" resolves to.
+		args = append(args, fmt.Sprintf("--listen-peer-udp-url=:%d", peerPort+1))
+	}
 	var clientHTTPURL string
 	if cfg.ClientHTTPSeparate {
 		clientHTTPURL = clientURL(cfg.ClientScheme(), clientHTTPPort, cfg.Client.ConnectionType)

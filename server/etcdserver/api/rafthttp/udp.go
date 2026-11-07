@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -40,8 +41,13 @@ import (
 //
 // Differences from the reference, all deliberate:
 //   - gated by a flag (the reference is always on);
-//   - the destination port is the port of the local UDP listen address (the
-//     same on every member), not a hard-coded constant;
+//   - the destination port is not a hard-coded constant: it is the peer's
+//     peer-URL port plus the local member's (UDP listen port - peer-URL port).
+//     With the usual layout (peer 2380 and UDP 2381 on every member, one host
+//     per member) that is the same UDP port for everyone, exactly as in the
+//     reference; members that share a host (the robustness harness) can each
+//     use their own pair of ports. Whenever either port cannot be read the
+//     local UDP listen port is used for every peer (the reference's rule);
 //   - one socket is reused per peer (the reference dials and closes one per
 //     heartbeat);
 //   - received datagrams are validated (the reference accepts anything): they
@@ -68,13 +74,19 @@ type udpHeartbeat struct {
 	lg   *zap.Logger
 	t    *Transport
 	conn net.PacketConn
-	port string // destination port: that of the local listen address
+	port string // the local listen port; the destination port when no offset applies
+
+	// offset is (local UDP port - local peer-URL port) when both are known; a
+	// peer's UDP port is its peer-URL port plus offset (see peerUDPPort).
+	offset    int
+	hasOffset bool
 
 	// dial opens the per-peer socket; replaceable in tests.
 	dial func(addr string) (net.Conn, error)
 
 	mu     sync.Mutex
 	hosts  map[types.ID]string
+	ports  map[types.ID]string // per-peer destination port
 	socks  map[types.ID]net.Conn
 	paused map[types.ID]bool
 	closed bool
@@ -92,6 +104,40 @@ func peerUDPHost(urls types.URLs) string {
 		return ""
 	}
 	return urls[0].Hostname()
+}
+
+// udpPortOffset is the local UDP listen port minus the port of the local first
+// peer URL; ok is false when either is missing or not a number.
+func udpPortOffset(local types.URLs, udpPort string) (int, bool) {
+	if len(local) == 0 {
+		return 0, false
+	}
+	pp, err := strconv.Atoi(local[0].Port())
+	if err != nil {
+		return 0, false
+	}
+	up, err := strconv.Atoi(udpPort)
+	if err != nil {
+		return 0, false
+	}
+	return up - pp, true
+}
+
+// peerUDPPort is the port of a peer's UDP listener: its first peer URL's port
+// plus offset. With no usable offset, peer port or result in 1..65535 it is
+// fallback (the local UDP port, the reference's rule).
+func peerUDPPort(peer types.URLs, offset int, hasOffset bool, fallback string) string {
+	if !hasOffset || len(peer) == 0 {
+		return fallback
+	}
+	pp, err := strconv.Atoi(peer[0].Port())
+	if err != nil {
+		return fallback
+	}
+	if p := pp + offset; p >= 1 && p <= 65535 {
+		return strconv.Itoa(p)
+	}
+	return fallback
 }
 
 // startUDPHeartbeat opens the UDP listener if Transport.UDPListenAddr is set.
@@ -112,15 +158,19 @@ func (t *Transport) startUDPHeartbeat() error {
 	if lg == nil {
 		lg = zap.NewNop()
 	}
+	offset, hasOffset := udpPortOffset(t.URLs, port)
 	u := &udpHeartbeat{
-		lg:     lg,
-		t:      t,
-		conn:   pc,
-		port:   port,
-		dial:   func(addr string) (net.Conn, error) { return net.Dial("udp", addr) },
-		hosts:  make(map[types.ID]string),
-		socks:  make(map[types.ID]net.Conn),
-		paused: make(map[types.ID]bool),
+		lg:        lg,
+		t:         t,
+		conn:      pc,
+		port:      port,
+		offset:    offset,
+		hasOffset: hasOffset,
+		dial:      func(addr string) (net.Conn, error) { return net.Dial("udp", addr) },
+		hosts:     make(map[types.ID]string),
+		ports:     make(map[types.ID]string),
+		socks:     make(map[types.ID]net.Conn),
+		paused:    make(map[types.ID]bool),
 	}
 	t.udp = u
 	u.wg.Add(1)
@@ -225,7 +275,11 @@ func (u *udpHeartbeat) send(to types.ID, m *raftpb.Message) bool {
 	}
 	conn := u.socks[to]
 	if conn == nil {
-		c, err := u.dial(net.JoinHostPort(host, u.port))
+		port := u.ports[to]
+		if port == "" {
+			port = u.port
+		}
+		c, err := u.dial(net.JoinHostPort(host, port))
 		if err != nil {
 			u.lg.Warn("cannot open UDP heartbeat socket; using TCP",
 				zap.String("remote-peer-id", to.String()), zap.String("host", host), zap.Error(err))
@@ -251,9 +305,10 @@ func (u *udpHeartbeat) setPeerURLs(id types.ID, urls types.URLs) {
 		return
 	}
 	host := peerUDPHost(urls)
+	port := peerUDPPort(urls, u.offset, u.hasOffset, u.port)
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if old := u.hosts[id]; old != host {
+	if old := u.hosts[id]; old != host || u.ports[id] != port {
 		if c := u.socks[id]; c != nil {
 			c.Close()
 			delete(u.socks, id)
@@ -261,9 +316,11 @@ func (u *udpHeartbeat) setPeerURLs(id types.ID, urls types.URLs) {
 	}
 	if host == "" {
 		delete(u.hosts, id)
+		delete(u.ports, id)
 		return
 	}
 	u.hosts[id] = host
+	u.ports[id] = port
 }
 
 // removePeer forgets a peer and closes its socket. Safe on nil.
@@ -278,6 +335,7 @@ func (u *udpHeartbeat) removePeer(id types.ID) {
 		delete(u.socks, id)
 	}
 	delete(u.hosts, id)
+	delete(u.ports, id)
 	delete(u.paused, id)
 }
 
