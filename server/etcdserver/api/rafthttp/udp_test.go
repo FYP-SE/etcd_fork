@@ -309,8 +309,13 @@ func TestUDP_CutPeerDropsUDPHeartbeatsAndMendRestoresThem(t *testing.T) {
 func TestUDP_ReceiverDropsInvalidDatagramsAndKeepsWorking(t *testing.T) {
 	p := newUDPPair(t)
 	// member 3 is a peer but has been removed from the cluster
+	// The receive goroutine is already running: set these under the transport
+	// lock, which it takes before reading them, so the writes are ordered
+	// before its reads (the datagram path alone gives the race detector no edge).
+	p.b.tr.mu.Lock()
 	p.b.tr.peers[3] = newFakePeer()
 	p.b.raft.removedID = 3
+	p.b.tr.mu.Unlock()
 
 	raw, err := net.Dial("udp", net.JoinHostPort(loopback3, strconv.Itoa(p.port)))
 	require.NoError(t, err)
