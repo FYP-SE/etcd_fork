@@ -177,6 +177,12 @@ var (
 		Name:      "signal_health",
 		Help:      "This node's smoothed health per stability signal in [0,1], 1 = healthy (DESIGN_UPDATE.md D7).",
 	}, []string{"signal"})
+	heirPeerRTTSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "etcd",
+		Subsystem: "heirraft",
+		Name:      "peer_rtt_seconds",
+		Help:      "This node's current smoothed RTT estimate to each peer, the value the RTT-ranked heir selection reads (DESIGN_UPDATE.md E8); -1 = no estimate.",
+	}, []string{"peer"})
 	heirGracefulHandoverTotal = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "etcd",
 		Subsystem: "heirraft",
@@ -217,6 +223,7 @@ func init() {
 	prometheus.MustRegister(learnerPromoteFailed)
 	prometheus.MustRegister(heirCurrentHeir)
 	prometheus.MustRegister(heirSignalHealth)
+	prometheus.MustRegister(heirPeerRTTSeconds)
 	prometheus.MustRegister(heirChangesTotal)
 	prometheus.MustRegister(heirNodeStabilityScore)
 	prometheus.MustRegister(heirGracefulHandoverTotal)

@@ -2342,6 +2342,18 @@ func (s *EtcdServer) monitorHeirRaftMetrics() {
 		for name, h := range s.heirRunner.SignalHealth() {
 			heirSignalHealth.WithLabelValues(name).Set(h)
 		}
+		if tr, ok := s.r.transport.(*rafthttp.Transport); ok {
+			for _, m := range s.cluster.Members() {
+				if m.ID == s.MemberID() {
+					continue
+				}
+				v := -1.0
+				if rtt, ok := tr.PeerRTT(m.ID); ok {
+					v = rtt.Seconds()
+				}
+				heirPeerRTTSeconds.WithLabelValues(m.ID.String()).Set(v)
+			}
+		}
 	}
 }
 

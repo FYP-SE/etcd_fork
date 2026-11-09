@@ -424,9 +424,9 @@ func (t *Transport) streamProberInterval() time.Duration {
 	return proberInterval
 }
 
-// PeerRTT returns the smoothed round-trip time to peer id measured by the
-// stream prober (the same estimate exported as
-// etcd_network_peer_round_trip_time_seconds), or false if the peer is
+// PeerRTT returns the network round-trip time to peer id estimated from the
+// stream prober's smoothed probe time (etcd_network_peer_round_trip_time_seconds
+// exports the unhalved probe time), or false if the peer is
 // unknown, not yet probed, or currently failing its probes. HeirRaft
 // (DESIGN_UPDATE.md E8) ranks heir candidates by it.
 func (t *Transport) PeerRTT(id types.ID) (time.Duration, bool) {
@@ -437,7 +437,13 @@ func (t *Transport) PeerRTT(id types.ID) (time.Duration, bool) {
 	if err != nil || !s.Health() {
 		return 0, false
 	}
-	rtt := s.SRTT()
+	// Each probe goes through streamRt, which never reuses connections
+	// (NewTimeoutTransport sets MaxIdleConnsPerHost = -1 when read/write
+	// timeouts are set), so one probe costs a TCP handshake plus the GET:
+	// two network round trips. Measured 2026-11-10 on the geo7 matrix at
+	// 100 writes/s: probe SRTT 23.8 / 27.4 ms for 11.7 / 14.1 ms links.
+	// Halve it so PeerRTT is the network RTT.
+	rtt := s.SRTT() / 2
 	return rtt, rtt > 0
 }
 
