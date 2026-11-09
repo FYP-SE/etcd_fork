@@ -173,6 +173,8 @@ Clustering:
     Enable HeirRaft heir-first log replication dispatch.
   --experimental-heir-lease 'false'
     Enable the HeirRaft heir lease: voters accept the announced heir early once they too have lost the leader. Requires --experimental-heir-election.
+  --experimental-heir-rtt-rank 'false'
+    Rank healthy HeirRaft heir candidates by the leader's peer RTT, lowest first. Requires --experimental-heir-election.
   --experimental-graceful-handover 'false'
     Enable HeirRaft proactive leadership transfer to the heir on leader score degradation.
   --experimental-heir-config ''

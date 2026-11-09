@@ -163,6 +163,9 @@ type ServerConfig struct {
 	ExperimentalHeirLogPriority bool
 	// ExperimentalHeirLease enables the heir lease (DESIGN_UPDATE.md D2).
 	ExperimentalHeirLease bool
+	// ExperimentalHeirRTTRank ranks healthy heir candidates by peer RTT
+	// (DESIGN_UPDATE.md E8).
+	ExperimentalHeirRTTRank bool
 	// ExperimentalGracefulHandover enables proactive leadership transfer to
 	// the heir when the leader's own score degrades (DESIGN.md §2.6).
 	ExperimentalGracefulHandover bool

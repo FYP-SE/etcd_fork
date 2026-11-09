@@ -443,6 +443,9 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		}
 	}
 	srv.r.transport = tr
+	if src, ok := b.raft.config.PeerRTT.(*peerRTTSource); ok {
+		src.attach(tr)
+	}
 
 	return srv, nil
 }

@@ -406,6 +406,23 @@ func (t *Transport) ActiveSince(id types.ID) time.Time {
 	return time.Time{}
 }
 
+// PeerRTT returns the smoothed round-trip time to peer id measured by the
+// stream prober (the same estimate exported as
+// etcd_network_peer_round_trip_time_seconds), or false if the peer is
+// unknown, not yet probed, or currently failing its probes. HeirRaft
+// (DESIGN_UPDATE.md E8) ranks heir candidates by it.
+func (t *Transport) PeerRTT(id types.ID) (time.Duration, bool) {
+	if t.streamProber == nil {
+		return 0, false
+	}
+	s, err := t.streamProber.Status(id.String())
+	if err != nil || !s.Health() {
+		return 0, false
+	}
+	rtt := s.SRTT()
+	return rtt, rtt > 0
+}
+
 func (t *Transport) SendSnapshot(m *snap.Message) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

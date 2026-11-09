@@ -606,6 +606,11 @@ func raftConfig(cfg config.ServerConfig, id uint64, s *raft.MemoryStorage) (*raf
 	rc.HeirElection = cfg.ExperimentalHeirElection
 	rc.HeirLogPriority = cfg.ExperimentalHeirLogPriority
 	rc.HeirLease = cfg.ExperimentalHeirLease
+	if cfg.ExperimentalHeirRTTRank {
+		// The transport does not exist yet; NewServer attaches it.
+		rc.HeirRTTRank = true
+		rc.PeerRTT = &peerRTTSource{}
+	}
 	rc.GracefulHandover = cfg.ExperimentalGracefulHandover
 	rc.FreshnessSlack = tunables.FreshnessSlack
 	rc.HeirSyncGrace = tunables.HeirSyncGrace
