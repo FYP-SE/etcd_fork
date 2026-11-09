@@ -120,6 +120,15 @@ type Transport struct {
 	// machine and thus stop the Transport.
 	ErrorC chan error
 
+	// StreamProberInterval, if non-zero, replaces the default probe interval
+	// (ConnReadTimeout - 1s, i.e. 4 s) for the stream prober, whose smoothed
+	// RTT PeerRTT returns. HeirRaft's RTT-ranked heir (DESIGN_UPDATE.md E8)
+	// sets it shorter: at 4 s with EWMA weight 1/8 the estimate needs
+	// ~30 s to follow a change (measured 2026-11-09: still 86-138 ms for a
+	// 15 ms link 20 s after the peer restarted). Must stay below
+	// ConnReadTimeout.
+	StreamProberInterval time.Duration
+
 	streamRt   http.RoundTripper // roundTripper used by streams
 	pipelineRt http.RoundTripper // roundTripper used by pipelines
 
@@ -311,8 +320,8 @@ func (t *Transport) AddPeer(id types.ID, us []string) {
 	}
 	fs := t.LeaderStats.Follower(id.String())
 	t.peers[id] = startPeer(t, urls, id, fs)
-	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec)
-	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec)
+	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec, proberInterval)
+	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec, t.streamProberInterval())
 
 	if t.Logger != nil {
 		t.Logger.Info(
@@ -383,9 +392,9 @@ func (t *Transport) UpdatePeer(id types.ID, us []string) {
 	t.peers[id].update(urls)
 
 	t.pipelineProber.Remove(id.String())
-	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec)
+	addPeerToProber(t.Logger, t.pipelineProber, id.String(), us, RoundTripperNameSnapshot, rttSec, proberInterval)
 	t.streamProber.Remove(id.String())
-	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec)
+	addPeerToProber(t.Logger, t.streamProber, id.String(), us, RoundTripperNameRaftMessage, rttSec, t.streamProberInterval())
 
 	if t.Logger != nil {
 		t.Logger.Info(
@@ -404,6 +413,15 @@ func (t *Transport) ActiveSince(id types.ID) time.Time {
 		return p.activeSince()
 	}
 	return time.Time{}
+}
+
+// streamProberInterval is StreamProberInterval if set and shorter than the
+// default, else the default proberInterval.
+func (t *Transport) streamProberInterval() time.Duration {
+	if t.StreamProberInterval > 0 && t.StreamProberInterval < proberInterval {
+		return t.StreamProberInterval
+	}
+	return proberInterval
 }
 
 // PeerRTT returns the smoothed round-trip time to peer id measured by the

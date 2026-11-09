@@ -22,6 +22,12 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 )
 
+// heirRTTProberInterval is the stream-prober interval used with
+// --experimental-heir-rtt-rank (default etcd: 4 s). With the prober's EWMA
+// weight of 1/8, 500 ms gives an estimate that follows a change within ~4 s.
+// Cost: one small HTTP GET per peer every 500 ms.
+const heirRTTProberInterval = 500 * time.Millisecond
+
 // peerRTTSource is the raft.PeerRTTProvider behind
 // --experimental-heir-rtt-rank (DESIGN_UPDATE.md E8). The raft config is
 // built before the transport exists, so the transport is attached later by

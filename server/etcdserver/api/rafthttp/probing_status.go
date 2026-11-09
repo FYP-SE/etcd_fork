@@ -38,13 +38,13 @@ var (
 	statusErrorInterval      = 5 * time.Second
 )
 
-func addPeerToProber(lg *zap.Logger, p probing.Prober, id string, us []string, roundTripperName string, rttSecProm *prometheus.HistogramVec) {
+func addPeerToProber(lg *zap.Logger, p probing.Prober, id string, us []string, roundTripperName string, rttSecProm *prometheus.HistogramVec, interval time.Duration) {
 	hus := make([]string, len(us))
 	for i := range us {
 		hus[i] = us[i] + ProbingPrefix
 	}
 
-	p.AddHTTP(id, proberInterval, hus)
+	p.AddHTTP(id, interval, hus)
 
 	s, err := p.Status(id)
 	if err != nil {

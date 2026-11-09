@@ -428,6 +428,10 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		LeaderStats: lstats,
 		ErrorC:      srv.errorc,
 	}
+	if cfg.ExperimentalHeirRTTRank {
+		// DESIGN_UPDATE.md E8: faster peer RTT estimate for heir ranking.
+		tr.StreamProberInterval = heirRTTProberInterval
+	}
 	if err = tr.Start(); err != nil {
 		return nil, err
 	}
