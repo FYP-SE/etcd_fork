@@ -41,8 +41,10 @@ type MemSampler interface {
 }
 
 // weights is DESIGN.md §5's default composite: CPU .3, mem .2, fsync .3,
-// jitter .2. Any single fully bad signal lowers the score by >= 51 of 255,
-// above 2x the default HysteresisMargin (DESIGN_UPDATE.md D7).
+// jitter .2. Any single fully bad signal lowers the score by >= 51 of 255
+// (0.2 x 255), above the default HysteresisMargin of 40 (DESIGN_UPDATE.md
+// D7). It was above 2x the margin only while the margin was 20; at 40 a
+// fully bad memory or jitter signal clears the margin by 11 points.
 func weights() map[raftstability.Signal]float64 {
 	return map[raftstability.Signal]float64{
 		raftstability.SignalCPU:    0.3,
