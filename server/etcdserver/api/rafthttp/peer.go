@@ -245,6 +245,7 @@ func (p *peer) send(m *raftpb.Message) {
 	writec, name := p.pick(m)
 	select {
 	case writec <- m:
+		sendTrace.record('q', p.id, lastEntryIndex(m), time.Now())
 	default:
 		p.r.ReportUnreachable(m.GetTo())
 		if isMsgSnap(m) {

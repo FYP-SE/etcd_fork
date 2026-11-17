@@ -169,6 +169,7 @@ func (cw *streamWriter) run() {
 	tickc := time.NewTicker(ConnReadTimeout / 3)
 	defer tickc.Stop()
 	unflushed := 0
+	var traceIdx uint64 // highest entry index written since the last flush (send_trace.go)
 
 	if cw.lg != nil {
 		cw.lg.Info(
@@ -206,12 +207,18 @@ func (cw *streamWriter) run() {
 			heartbeatc, msgc = nil, nil
 
 		case m := <-msgc:
+			sendTrace.record('d', cw.peerID, lastEntryIndex(m), time.Now())
 			err := enc.encode(m)
 			if err == nil {
 				unflushed += proto.Size(m)
+				if i := lastEntryIndex(m); i > traceIdx {
+					traceIdx = i
+				}
 
 				if len(msgc) == 0 || batched > streamBufSize/2 {
 					flusher.Flush()
+					sendTrace.record('f', cw.peerID, traceIdx, time.Now())
+					traceIdx = 0
 					sentBytes.WithLabelValues(cw.peerID.String()).Add(float64(unflushed))
 					unflushed = 0
 					batched = 0

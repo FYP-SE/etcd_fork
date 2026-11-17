@@ -18,6 +18,7 @@ import (
 	"expvar"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -398,6 +399,13 @@ func (r *raftNode) processMessages(ms []*raftpb.Message) []*raftpb.Message {
 		}
 		messages = append(messages, m)
 	}
+	// The loop runs backwards (so the first MsgAppResp it meets is the latest
+	// one), which builds messages in reverse. Restore raft's order: several
+	// MsgApps to one follower in one Ready must go out in ascending index
+	// order, or the follower rejects them and the leader has to probe and
+	// resend. etcd v3.6 kept the order by marking dropped messages with To = 0
+	// instead of rebuilding the slice (HeirRaft fix, RESEARCH_LOG 2026-11-17).
+	slices.Reverse(messages)
 	return messages
 }
 
