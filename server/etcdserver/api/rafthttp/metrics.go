@@ -14,7 +14,12 @@
 
 package rafthttp
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/proto"
+
+	"go.etcd.io/raft/v3/raftpb"
+)
 
 var (
 	activePeers = prometheus.NewGaugeVec(
@@ -165,6 +170,31 @@ var (
 		[]string{"From"},
 	)
 
+	// HeirRaft final evaluation (2026-11-19), observability only, recorded in
+	// every arm: raft messages handed to the peer stream/pipeline, by message
+	// type, and their protobuf size in bytes (wire framing excluded). Lets the
+	// overhead analysis compare message counts and sizes per type between
+	// arms (e.g. the two HeirRaft fields on MsgApp/MsgHeartbeat).
+	raftMessagesSent = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "etcd",
+			Subsystem: "network",
+			Name:      "raft_messages_sent_total",
+			Help:      "The total number of raft messages queued for sending to peers, by message type.",
+		},
+		[]string{"type"},
+	)
+
+	raftMessageBytesSent = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "etcd",
+			Subsystem: "network",
+			Name:      "raft_message_bytes_sent_total",
+			Help:      "The total protobuf size in bytes of raft messages queued for sending to peers, by message type.",
+		},
+		[]string{"type"},
+	)
+
 	rttSec = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "etcd",
@@ -198,4 +228,14 @@ func init() {
 	prometheus.MustRegister(snapshotReceiveSeconds)
 
 	prometheus.MustRegister(rttSec)
+	prometheus.MustRegister(raftMessagesSent)
+	prometheus.MustRegister(raftMessageBytesSent)
+}
+
+// recordMessageSent counts one raft message queued for a peer, by type, with
+// its protobuf size (see raftMessagesSent).
+func recordMessageSent(m *raftpb.Message) {
+	typ := m.GetType().String()
+	raftMessagesSent.WithLabelValues(typ).Inc()
+	raftMessageBytesSent.WithLabelValues(typ).Add(float64(proto.Size(m)))
 }
